@@ -115,6 +115,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "radio_ping_role_id": None,
             "ranks": [],
             "log_channel_id": None,
+            "ticket_log_channel_id": None,
+            "order_log_channel_id": None,
             "orders": [],
             "next_order_id": 1,
             "ticket_types": [],
@@ -136,6 +138,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("radio_ping_role_id", None)
     g.setdefault("ranks", [])
     g.setdefault("log_channel_id", None)
+    g.setdefault("ticket_log_channel_id", None)
+    g.setdefault("order_log_channel_id", None)
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
     return g
@@ -175,9 +179,16 @@ LOG_CATEGORIES = {
     "roster": ("📋", "Roster", 0x3B82F6),
     "kos": ("💀", "KOS", 0xDC2626),
     "radio": ("📻", "Radio", 0xA855F7),
-    "orders": ("🔫", "Gun Orders", 0xF59E0B),
+    "tickets": ("🎫", "Tickets", 0x0EA5E9),
+    "orders": ("💰", "Orders", 0xF59E0B),
     "config": ("⚙️", "Config", 0x6B7280),
     "activity": ("•", "Activity", EMBED_COLOR),
+}
+
+# which stored channel each category logs to (falls back to the general log)
+LOG_ROUTING = {
+    "tickets": "ticket_log_channel_id",
+    "orders": "order_log_channel_id",
 }
 
 
@@ -196,7 +207,9 @@ async def send_log(
     `fields` is a list of (name, value, inline) tuples for extra detail.
     `channel_ctx` adds a 'Channel' field pointing at where the action happened.
     """
-    cid = store.get("log_channel_id")
+    # route to the category's own channel, else fall back to the general log
+    key = LOG_ROUTING.get(category)
+    cid = (store.get(key) if key else None) or store.get("log_channel_id")
     if not cid:
         return
     channel = guild.get_channel(cid)
@@ -1043,7 +1056,9 @@ async def kos_reset(interaction: discord.Interaction) -> None:
 # setting value -> (label, store key, kind)
 CONFIG_SETTINGS = {
     "leadership_role": ("Leadership role", "leadership_role_id", "role"),
-    "log_channel": ("Log channel", "log_channel_id", "channel"),
+    "log_channel": ("General log channel", "log_channel_id", "channel"),
+    "ticket_log_channel": ("Ticket log channel", "ticket_log_channel_id", "channel"),
+    "order_log_channel": ("Order log channel", "order_log_channel_id", "channel"),
     "eoi_channel": ("EOI channel", "eoi_channel_id", "channel"),
     "transcript_channel": ("Transcript channel", "transcript_channel_id", "channel"),
     "roster_role": ("Roster default role", "roster_role_id", "role"),
@@ -1063,7 +1078,9 @@ CONFIG_SETTINGS = {
 @app_commands.choices(
     setting=[
         app_commands.Choice(name="Leadership role (admin only)", value="leadership_role"),
-        app_commands.Choice(name="Log channel", value="log_channel"),
+        app_commands.Choice(name="General log channel", value="log_channel"),
+        app_commands.Choice(name="Ticket log channel", value="ticket_log_channel"),
+        app_commands.Choice(name="Order log channel", value="order_log_channel"),
         app_commands.Choice(name="EOI channel", value="eoi_channel"),
         app_commands.Choice(name="Transcript channel", value="transcript_channel"),
         app_commands.Choice(name="Roster default role", value="roster_role"),
@@ -1131,10 +1148,16 @@ async def config_view(interaction: discord.Interaction) -> None:
 
     embed = discord.Embed(title="⚙️  Server Configuration", color=EMBED_COLOR)
     embed.add_field(name="👑 Leadership", value=ro("leadership_role_id"), inline=True)
-    embed.add_field(name="📝 Log channel", value=ch("log_channel_id"), inline=True)
     embed.add_field(name="📨 EOI channel", value=ch("eoi_channel_id"), inline=True)
     embed.add_field(
         name="🧾 Transcripts", value=ch("transcript_channel_id"), inline=True
+    )
+    embed.add_field(name="📝 General log", value=ch("log_channel_id"), inline=True)
+    embed.add_field(
+        name="🎫 Ticket log", value=ch("ticket_log_channel_id"), inline=True
+    )
+    embed.add_field(
+        name="💰 Order log", value=ch("order_log_channel_id"), inline=True
     )
     embed.add_field(name="📋 Roster role", value=ro("roster_role_id"), inline=True)
     embed.add_field(name="💀 KOS role", value=ro("kos_role_id"), inline=True)
@@ -1149,13 +1172,14 @@ async def config_view(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="🎖️ Ranks", value=str(len(store.get("ranks", []))), inline=True
     )
+    embed.add_field(name="​", value="​", inline=True)
     embed.set_footer(text="Change anything with /config set")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @config_group.command(
     name="log_setup",
-    description="One-click: create a private log channel and start logging (leadership)",
+    description="One-click: create separate log channels and start logging (leadership)",
 )
 async def config_log_setup(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -1169,8 +1193,8 @@ async def config_log_setup(interaction: discord.Interaction) -> None:
     me = guild.me
     if not me.guild_permissions.manage_channels:
         await interaction.followup.send(
-            "I need the **Manage Channels** permission to create a log channel. "
-            "Give me that, or use `/config set` with an existing channel.",
+            "I need the **Manage Channels** permission to create log channels. "
+            "Give me that, or use `/config set` with existing channels.",
             ephemeral=True,
         )
         return
@@ -1183,30 +1207,48 @@ async def config_log_setup(interaction: discord.Interaction) -> None:
     if lead is not None:
         overwrites[lead] = discord.PermissionOverwrite(view_channel=True)
 
+    store = guild_store(DATA, interaction.guild_id)
     try:
-        channel = await guild.create_text_channel(
-            "gang-logs",
-            overwrites=overwrites,
-            reason=f"Log setup by {interaction.user}",
+        category = await guild.create_category(
+            "📁 Logs", overwrites=overwrites, reason=f"Log setup by {interaction.user}"
         )
+        # (channel name, store key)
+        to_make = [
+            ("gang-logs", "log_channel_id"),
+            ("ticket-logs", "ticket_log_channel_id"),
+            ("order-logs", "order_log_channel_id"),
+        ]
+        made = []
+        for name, key in to_make:
+            ch = await guild.create_text_channel(
+                name,
+                category=category,
+                overwrites=overwrites,
+                reason=f"Log setup by {interaction.user}",
+            )
+            store[key] = ch.id
+            made.append(ch.mention)
     except discord.Forbidden:
         await interaction.followup.send(
-            "I couldn't create the channel — check my **Manage Channels** permission "
+            "I couldn't create the channels — check my **Manage Channels** permission "
             "and that my role is high enough.",
             ephemeral=True,
         )
         return
     except discord.HTTPException:
         await interaction.followup.send(
-            "Something went wrong creating the channel.", ephemeral=True
+            "Something went wrong creating the channels.", ephemeral=True
         )
         return
 
-    store = guild_store(DATA, interaction.guild_id)
-    store["log_channel_id"] = channel.id
     save_data(DATA)
     await interaction.followup.send(
-        f"Created {channel.mention} and logging is on. ✅", ephemeral=True
+        "Logging is on. Created:\n"
+        f"📝 {made[0]} — roster, KOS, radio, config\n"
+        f"🎫 {made[1]} — tickets opened / claimed / closed\n"
+        f"💰 {made[2]} — orders marked paid\n"
+        "✅",
+        ephemeral=True,
     )
     await send_log(
         guild,
@@ -1623,10 +1665,11 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="⚙️  Setup",
         value=(
-            "`/config set` — channels & roles (log, EOI, transcript, "
+            "`/config set` — channels & roles (logs, EOI, transcript, "
             "leadership, roster/KOS/radio roles)\n"
             "`/config view` — see all settings\n"
-            "`/config log_setup` — one-click log channel"
+            "`/config log_setup` — one-click: make separate log channels\n"
+            "(general · tickets · orders)"
         ),
         inline=False,
     )
@@ -1802,7 +1845,7 @@ async def _close_ticket(
             guild,
             store,
             f"🔒 **{order.get('type', 'order')}** #{order['id']} closed.",
-            category="orders",
+            category="tickets",
             actor=interaction.user,
             fields=[
                 ("Order", f"#{order['id']}", True),
@@ -1968,7 +2011,7 @@ class OrderModal(discord.ui.Modal):
             guild,
             store,
             f"🆕 New **{self.ticket_type}** ticket opened.",
-            category="orders",
+            category="tickets",
             actor=interaction.user,
             channel_ctx=channel,
             fields=[
@@ -2051,7 +2094,7 @@ class OrderTicketView(discord.ui.View):
             interaction.guild,
             store,
             f"🙋 **{order.get('type', 'order')}** #{order['id']} claimed.",
-            category="orders",
+            category="tickets",
             actor=interaction.user,
             channel_ctx=interaction.channel,
             fields=[
