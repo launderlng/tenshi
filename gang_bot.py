@@ -2361,6 +2361,46 @@ async def ticket_type_remove(interaction: discord.Interaction, name: str) -> Non
         f"Removed ticket type **{name}**. Repost with `/ticket panel`. 🗑️",
         ephemeral=True,
     )
+    await send_log(
+        interaction.guild,
+        store,
+        f"🎫 Ticket type **{name}** removed.",
+        category="tickets",
+        actor=interaction.user,
+    )
+
+
+@ticket_group.command(
+    name="type_clear",
+    description="Remove ALL ticket types at once (leadership only)",
+)
+async def ticket_type_clear(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can clear ticket types.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    count = len(store["ticket_types"])
+    if count == 0:
+        await interaction.response.send_message(
+            "There are no ticket types to remove.", ephemeral=True
+        )
+        return
+    store["ticket_types"] = []
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Cleared **{count}** ticket type{'s' if count != 1 else ''}. "
+        "Repost the menu with `/ticket panel`. 🗑️",
+        ephemeral=True,
+    )
+    await send_log(
+        interaction.guild,
+        store,
+        f"🎫 All ticket types cleared ({count}).",
+        category="tickets",
+        actor=interaction.user,
+    )
 
 
 @ticket_group.command(name="type_list", description="Show the configured ticket types")
