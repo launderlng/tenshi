@@ -1051,6 +1051,67 @@ async def log_channel_off(interaction: discord.Interaction) -> None:
     await interaction.response.send_message("Logging turned off. ✅", ephemeral=True)
 
 
+@log_channel_group.command(
+    name="setup",
+    description="One-click: create a private log channel and start logging (leadership)",
+)
+async def log_channel_setup(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set up logging.", ephemeral=True
+        )
+        return
+    await interaction.response.defer(ephemeral=True)
+
+    guild = interaction.guild
+    me = guild.me
+    if not me.guild_permissions.manage_channels:
+        await interaction.followup.send(
+            "I need the **Manage Channels** permission to create a log channel. "
+            "Give me that, or use `/log_channel set #channel` with an existing one.",
+            ephemeral=True,
+        )
+        return
+
+    # private by default: hidden from everyone, visible to the bot + leadership
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    lead = discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
+    if lead is not None:
+        overwrites[lead] = discord.PermissionOverwrite(view_channel=True)
+
+    try:
+        channel = await guild.create_text_channel(
+            "gang-logs",
+            overwrites=overwrites,
+            reason=f"Log setup by {interaction.user}",
+        )
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "I couldn't create the channel — check my **Manage Channels** permission "
+            "and that my role is high enough.",
+            ephemeral=True,
+        )
+        return
+    except discord.HTTPException:
+        await interaction.followup.send(
+            "Something went wrong creating the channel.", ephemeral=True
+        )
+        return
+
+    store = guild_store(DATA, interaction.guild_id)
+    store["log_channel_id"] = channel.id
+    save_data(DATA)
+    await interaction.followup.send(
+        f"Created {channel.mention} and logging is on. ✅", ephemeral=True
+    )
+    await send_log(
+        guild, store, f"📝 Logging set up by {interaction.user.mention}."
+    )
+
+
 # ---- /eoi_channel ----------------------------------------------------------- #
 
 @eoi_channel_group.command(name="set", description="Set the channel EOIs are sent to")
@@ -1511,7 +1572,8 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="Logs",
         value=(
-            "`/log_channel set` — log roster/KOS/radio actions here (leadership)\n"
+            "`/log_channel setup` — one-click: make a log channel + start (leadership)\n"
+            "`/log_channel set` — use an existing channel (leadership)\n"
             "`/log_channel show` — show the log channel\n"
             "`/log_channel off` — stop logging (leadership)"
         ),
