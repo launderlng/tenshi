@@ -106,6 +106,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "self_roles": [],
             "radio_freq": None,
             "radio_ping_role_id": None,
+            "ranks": [],
+            "log_channel_id": None,
         },
     )
     # make sure older save files get any new keys
@@ -117,6 +119,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("self_roles", [])
     g.setdefault("radio_freq", None)
     g.setdefault("radio_ping_role_id", None)
+    g.setdefault("ranks", [])
+    g.setdefault("log_channel_id", None)
     return g
 
 
@@ -139,6 +143,25 @@ def is_leadership(member: discord.Member) -> bool:
 
 def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+async def send_log(guild: "discord.Guild", store: dict[str, Any], text: str) -> None:
+    """Post an audit line to the configured log channel, if one is set."""
+    cid = store.get("log_channel_id")
+    if not cid:
+        return
+    channel = guild.get_channel(cid)
+    if channel is None:
+        return
+    embed = discord.Embed(
+        description=text,
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    try:
+        await channel.send(embed=embed)
+    except discord.HTTPException:
+        pass
 
 
 # Matches the video id in the common YouTube URL shapes:
@@ -514,6 +537,29 @@ def _dedupe_members(members: list[discord.Member | None]) -> list[discord.Member
     return out
 
 
+def _rank_role(
+    guild: discord.Guild, store: dict[str, Any], rank_name: str
+) -> discord.Role | None:
+    """The server role mapped to a rank name, or None."""
+    for r in store.get("ranks", []):
+        if r["name"].lower() == rank_name.lower():
+            return guild.get_role(r["role_id"])
+    return None
+
+
+async def rank_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    """Suggest the guild's configured rank names while typing the rank option."""
+    store = guild_store(DATA, interaction.guild_id)
+    cur = current.lower()
+    return [
+        app_commands.Choice(name=r["name"], value=r["name"])
+        for r in store.get("ranks", [])
+        if cur in r["name"].lower()
+    ][:25]
+
+
 @roster_group.command(
     name="set_role",
     description="Set the role given to roster members (leadership only)",
@@ -531,8 +577,88 @@ async def roster_set_role(
     store["roster_role_id"] = role.id
     save_data(DATA)
     await interaction.response.send_message(
-        f"Roster members will now be given the {role.mention} role. ✅", ephemeral=True
+        f"Roster members will now be given the {role.mention} role by default. ✅",
+        ephemeral=True,
     )
+
+
+@roster_group.command(
+    name="rank_set",
+    description="Map a rank name to a server role (leadership only)",
+)
+@app_commands.describe(
+    name="Rank name (e.g. OG, Prospect, Driver)",
+    role="The server role this rank gives",
+)
+async def roster_rank_set(
+    interaction: discord.Interaction, name: str, role: discord.Role
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set ranks.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    ranks = store["ranks"]
+    name_clean = name.strip()
+    for r in ranks:
+        if r["name"].lower() == name_clean.lower():
+            r["name"] = name_clean
+            r["role_id"] = role.id
+            break
+    else:
+        if len(ranks) >= 25:
+            await interaction.response.send_message(
+                "You can have at most 25 ranks.", ephemeral=True
+            )
+            return
+        ranks.append({"name": name_clean, "role_id": role.id})
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Rank **{name_clean}** → {role.mention}. Pick it when adding to the roster. ✅",
+        ephemeral=True,
+    )
+
+
+@roster_group.command(
+    name="rank_remove", description="Remove a configured rank (leadership only)"
+)
+@app_commands.describe(name="The rank name to remove")
+@app_commands.autocomplete(name=rank_autocomplete)
+async def roster_rank_remove(interaction: discord.Interaction, name: str) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can remove ranks.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    before = len(store["ranks"])
+    store["ranks"] = [r for r in store["ranks"] if r["name"].lower() != name.lower()]
+    if len(store["ranks"]) == before:
+        await interaction.response.send_message(
+            f"No rank called **{name}**.", ephemeral=True
+        )
+        return
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Removed rank **{name}**. 🗑️", ephemeral=True
+    )
+
+
+@roster_group.command(
+    name="rank_list", description="Show the configured ranks and their roles"
+)
+async def roster_rank_list(interaction: discord.Interaction) -> None:
+    store = guild_store(DATA, interaction.guild_id)
+    ranks = store["ranks"]
+    embed = discord.Embed(title="🎖️ Ranks", color=EMBED_COLOR)
+    if not ranks:
+        embed.description = "No ranks yet. Add some with `/roster rank_set`."
+    else:
+        embed.description = "\n".join(
+            f"**{r['name']}** → <@&{r['role_id']}>" for r in ranks
+        )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @roster_group.command(name="view", description="Show the current gang roster")
@@ -544,7 +670,7 @@ async def roster_view(interaction: discord.Interaction) -> None:
 
 @roster_group.command(
     name="add",
-    description="Add up to 5 members to the roster and give them the roster role",
+    description="Add up to 5 members to the roster and give them a rank's role",
 )
 @app_commands.describe(
     member="Member to add (@mention them)",
@@ -552,8 +678,9 @@ async def roster_view(interaction: discord.Interaction) -> None:
     member3="Another member (optional)",
     member4="Another member (optional)",
     member5="Another member (optional)",
-    rank="Optional rank/role note applied to everyone added",
+    rank="Rank to assign — pick from your configured ranks (optional)",
 )
+@app_commands.autocomplete(rank=rank_autocomplete)
 async def roster_add(
     interaction: discord.Interaction,
     member: discord.Member,
@@ -564,7 +691,10 @@ async def roster_add(
     rank: str | None = None,
 ) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    role = _roster_role(interaction.guild, store)
+    rank_role = _rank_role(interaction.guild, store, rank) if rank else None
+    base_role = _roster_role(interaction.guild, store)
+    # A picked rank's role wins; otherwise fall back to the default roster role.
+    role = rank_role or base_role
     targets = _dedupe_members([member, member2, member3, member4, member5])
 
     added, skipped, role_fail = [], [], []
@@ -589,15 +719,20 @@ async def roster_add(
         added.append(m.mention)
     save_data(DATA)
 
+    as_rank = f" as **{rank}**" if rank else ""
     lines = []
     if added:
-        lines.append(f"✅ Added {', '.join(added)} to the roster.")
+        lines.append(f"✅ Added {', '.join(added)} to the roster{as_rank}.")
     if skipped:
         lines.append(f"ℹ️ Already on the roster: {', '.join(skipped)}.")
-    if role is None:
+    if rank and rank_role is None:
         lines.append(
-            "⚠️ No roster role set — run `/roster set_role` so members get one "
-            "automatically."
+            f"⚠️ No role is mapped to rank **{rank}** — set one with `/roster rank_set`."
+        )
+    elif role is None:
+        lines.append(
+            "⚠️ No role to give — set a rank with `/roster rank_set` or a default "
+            "with `/roster set_role`."
         )
     elif role_fail:
         lines.append(
@@ -605,6 +740,13 @@ async def roster_add(
             "— check I have **Manage Roles** and my role sits above it."
         )
     await interaction.response.send_message("\n".join(lines) or "Nothing to add.")
+
+    if added:
+        await send_log(
+            interaction.guild,
+            store,
+            f"📋 {interaction.user.mention} added {', '.join(added)} to the roster{as_rank}.",
+        )
 
 
 @roster_group.command(
@@ -636,6 +778,11 @@ async def roster_remove(
     await interaction.response.send_message(
         f"Removed {member.mention} from the roster. 🗑️{note}"
     )
+    await send_log(
+        interaction.guild,
+        store,
+        f"📋 {interaction.user.mention} removed {member.mention} from the roster.",
+    )
 
 
 @roster_group.command(
@@ -654,6 +801,11 @@ async def roster_reset(interaction: discord.Interaction) -> None:
     save_data(DATA)
     await interaction.response.send_message(
         f"Roster wiped — {count} members cleared. Roles left untouched. 🧹"
+    )
+    await send_log(
+        interaction.guild,
+        store,
+        f"📋 {interaction.user.mention} wiped the roster ({count} cleared).",
     )
 
 
@@ -773,6 +925,13 @@ async def kos_add(
         )
     await interaction.response.send_message("\n".join(lines) or "Nothing to add.")
 
+    if added:
+        await send_log(
+            interaction.guild,
+            store,
+            f"💀 {interaction.user.mention} added {', '.join(added)} to the KOS list.",
+        )
+
 
 @kos_group.command(
     name="remove",
@@ -803,6 +962,11 @@ async def kos_remove(
     await interaction.response.send_message(
         f"Removed {member.mention} from the KOS list. 🗑️{note}"
     )
+    await send_log(
+        interaction.guild,
+        store,
+        f"💀 {interaction.user.mention} removed {member.mention} from the KOS list.",
+    )
 
 
 @kos_group.command(
@@ -822,6 +986,69 @@ async def kos_reset(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         f"KOS list wiped — {count} entries cleared. Roles left untouched. 🧹"
     )
+    await send_log(
+        interaction.guild,
+        store,
+        f"💀 {interaction.user.mention} wiped the KOS list ({count} cleared).",
+    )
+
+
+# ---- /log_channel ----------------------------------------------------------- #
+
+log_channel_group = app_commands.Group(
+    name="log_channel", description="Configure the audit log channel"
+)
+
+
+@log_channel_group.command(
+    name="set", description="Set the channel bot actions are logged to (leadership only)"
+)
+@app_commands.describe(channel="The channel to post audit logs in")
+async def log_channel_set(
+    interaction: discord.Interaction, channel: discord.TextChannel
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set the log channel.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["log_channel_id"] = channel.id
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Roster, KOS and radio actions will now be logged to {channel.mention}. ✅",
+        ephemeral=True,
+    )
+    await send_log(
+        interaction.guild, store, f"📝 Log channel set by {interaction.user.mention}."
+    )
+
+
+@log_channel_group.command(name="show", description="Show the current log channel")
+async def log_channel_show(interaction: discord.Interaction) -> None:
+    store = guild_store(DATA, interaction.guild_id)
+    cid = store.get("log_channel_id")
+    if not cid:
+        await interaction.response.send_message(
+            "No log channel set. Use `/log_channel set`.", ephemeral=True
+        )
+        return
+    channel = interaction.guild.get_channel(cid)
+    where = channel.mention if channel else "a channel that no longer exists"
+    await interaction.response.send_message(f"Logging to {where}.", ephemeral=True)
+
+
+@log_channel_group.command(name="off", description="Stop logging (leadership only)")
+async def log_channel_off(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can change the log channel.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["log_channel_id"] = None
+    save_data(DATA)
+    await interaction.response.send_message("Logging turned off. ✅", ephemeral=True)
 
 
 # ---- /eoi_channel ----------------------------------------------------------- #
@@ -1074,6 +1301,11 @@ class RadioPanelView(discord.ui.View):
             )
 
         await interaction.followup.send(f"Rolled `{freq}`. 📻", ephemeral=True)
+        await send_log(
+            interaction.guild,
+            store,
+            f"📻 {interaction.user.mention} rolled a new radio: `{freq}`.",
+        )
 
 
 RADIO_PANEL_VIEW = RadioPanelView()
@@ -1098,6 +1330,11 @@ async def radio_new(interaction: discord.Interaction) -> None:
     )
     await interaction.response.send_message(
         f"New radio rolled: `{freq}` 📻", ephemeral=True
+    )
+    await send_log(
+        interaction.guild,
+        store,
+        f"📻 {interaction.user.mention} rolled a new radio: `{freq}`.",
     )
 
 
@@ -1221,10 +1458,12 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="Roster",
         value=(
             "`/roster view` — show the roster\n"
-            "`/roster add @members [rank]` — add up to 5 + give the roster role\n"
+            "`/roster add @members [rank]` — add up to 5 + give the rank's role\n"
             "`/roster remove @member` — remove + take the role back\n"
-            "`/roster set_role` — set the roster role (leadership)\n"
-            "`/roster reset` — wipe it + strip the role (leadership)"
+            "`/roster rank_set` — map a rank to a role (leadership)\n"
+            "`/roster rank_list` — show ranks\n"
+            "`/roster set_role` — default role (leadership)\n"
+            "`/roster reset` — wipe the list (leadership)"
         ),
         inline=False,
     )
@@ -1269,6 +1508,15 @@ async def gang_help(interaction: discord.Interaction) -> None:
         ),
         inline=False,
     )
+    embed.add_field(
+        name="Logs",
+        value=(
+            "`/log_channel set` — log roster/KOS/radio actions here (leadership)\n"
+            "`/log_channel show` — show the log channel\n"
+            "`/log_channel off` — stop logging (leadership)"
+        ),
+        inline=False,
+    )
     embed.set_footer(text=f"Leadership role: {LEADERSHIP_ROLE_NAME}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1282,6 +1530,7 @@ bot.tree.add_command(kos_group)
 bot.tree.add_command(eoi_channel_group)
 bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
+bot.tree.add_command(log_channel_group)
 
 
 @bot.event

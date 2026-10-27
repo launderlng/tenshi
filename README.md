@@ -8,8 +8,11 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | Command | What it does | Who |
 |---|---|---|
 | `/roster view` | Show the current roster | Everyone |
-| `/roster set_role <role>` | Choose the role given to roster members | Leadership |
-| `/roster add @member [+4 more] [rank]` | Add up to 5 members and give them the roster role | Everyone |
+| `/roster rank_set <name> <role>` | Map a rank name to a server role | Leadership |
+| `/roster rank_remove <name>` | Remove a configured rank | Leadership |
+| `/roster rank_list` | Show configured ranks and their roles | Everyone |
+| `/roster set_role <role>` | Default role given when no rank is picked | Leadership |
+| `/roster add @member [+4 more] [rank]` | Add up to 5 members; a picked rank gives that rank's role | Everyone |
 | `/roster remove @member` | Remove a member and take the role back | Everyone |
 | `/roster reset` | Wipe the roster list (keeps everyone's role) | Leadership |
 | `/kos view` | Show the KOS list | Everyone |
@@ -29,6 +32,9 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | `/radio set_ping <role>` | Set the role pinged when a new radio is rolled | Leadership |
 | `/radio new` | Roll a new random radio frequency and post it in this channel | Leadership |
 | `/radio view` | Show the current radio frequency | Everyone |
+| `/log_channel set <channel>` | Log roster/KOS/radio actions to a channel | Leadership |
+| `/log_channel show` | Show the log channel | Everyone |
+| `/log_channel off` | Stop logging | Leadership |
 | `/gang_help` | List all commands | Everyone |
 
 ## Setup
