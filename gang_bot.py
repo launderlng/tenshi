@@ -358,7 +358,7 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             embed.set_image(url=thumb)
         embed.set_footer(text="✅ 0   •   ❌ 0")
 
-        await channel.send(embed=embed, view=EOI_VIEW)
+        await channel.send(embed=embed, view=EOIView())
         await interaction.response.send_message(
             f"Your EOI has been sent to {channel.mention}. Good luck. 🫡",
             ephemeral=True,
@@ -1282,6 +1282,23 @@ bot.tree.add_command(kos_group)
 bot.tree.add_command(eoi_channel_group)
 bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
+
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction) -> None:
+    # Diagnostic: log every interaction the bot receives so we can see whether
+    # component (button) clicks are arriving and with what custom_id.
+    try:
+        data = interaction.data or {}
+        log.info(
+            "on_interaction: type=%s component_type=%s custom_id=%s user=%s",
+            getattr(interaction.type, "name", interaction.type),
+            data.get("component_type"),
+            data.get("custom_id"),
+            interaction.user,
+        )
+    except Exception:  # never let logging break interaction handling
+        log.exception("on_interaction logging failed")
 
 
 @bot.event
