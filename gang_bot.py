@@ -101,6 +101,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "kos": [],
             "eoi_channel_id": None,
             "roster_role_id": None,
+            "kos_role_id": None,
             "self_roles": [],
         },
     )
@@ -109,6 +110,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("kos", [])
     g.setdefault("eoi_channel_id", None)
     g.setdefault("roster_role_id", None)
+    g.setdefault("kos_role_id", None)
     g.setdefault("self_roles", [])
     return g
 
@@ -468,6 +470,18 @@ def _roster_embed(entries: list[dict[str, Any]]) -> discord.Embed:
     return embed
 
 
+def _dedupe_members(members: list[discord.Member | None]) -> list[discord.Member]:
+    """Drop None entries and duplicate members, preserving order."""
+    seen: set[int] = set()
+    out: list[discord.Member] = []
+    for m in members:
+        if m is None or m.id in seen:
+            continue
+        seen.add(m.id)
+        out.append(m)
+    return out
+
+
 @roster_group.command(
     name="set_role",
     description="Set the role given to roster members (leadership only)",
@@ -497,55 +511,68 @@ async def roster_view(interaction: discord.Interaction) -> None:
 
 
 @roster_group.command(
-    name="add", description="Add a member to the roster and give them the roster role"
+    name="add",
+    description="Add up to 5 members to the roster and give them the roster role",
 )
 @app_commands.describe(
-    member="The Discord member to add (@mention them)",
-    rank="Optional rank or role note (e.g. OG, Prospect, Driver)",
+    member="Member to add (@mention them)",
+    member2="Another member (optional)",
+    member3="Another member (optional)",
+    member4="Another member (optional)",
+    member5="Another member (optional)",
+    rank="Optional rank/role note applied to everyone added",
 )
 async def roster_add(
     interaction: discord.Interaction,
     member: discord.Member,
+    member2: discord.Member | None = None,
+    member3: discord.Member | None = None,
+    member4: discord.Member | None = None,
+    member5: discord.Member | None = None,
     rank: str | None = None,
 ) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    if any(m.get("id") == member.id for m in store["roster"]):
-        await interaction.response.send_message(
-            f"{member.mention} is already on the roster.", ephemeral=True
-        )
-        return
-
     role = _roster_role(interaction.guild, store)
-    note = ""
+    targets = _dedupe_members([member, member2, member3, member4, member5])
+
+    added, skipped, role_fail = [], [], []
+    for m in targets:
+        if any(e.get("id") == m.id for e in store["roster"]):
+            skipped.append(m.mention)
+            continue
+        if role is not None:
+            try:
+                await m.add_roles(role, reason=f"Roster add by {interaction.user}")
+            except (discord.Forbidden, discord.HTTPException):
+                role_fail.append(m.mention)
+        store["roster"].append(
+            {
+                "id": m.id,
+                "name": m.display_name,
+                "note": rank,
+                "added_by": str(interaction.user),
+                "at": now_stamp(),
+            }
+        )
+        added.append(m.mention)
+    save_data(DATA)
+
+    lines = []
+    if added:
+        lines.append(f"✅ Added {', '.join(added)} to the roster.")
+    if skipped:
+        lines.append(f"ℹ️ Already on the roster: {', '.join(skipped)}.")
     if role is None:
-        note = (
-            "\n⚠️ No roster role is set — run `/roster set_role` so members get one "
+        lines.append(
+            "⚠️ No roster role set — run `/roster set_role` so members get one "
             "automatically."
         )
-    else:
-        try:
-            await member.add_roles(role, reason=f"Roster add by {interaction.user}")
-        except discord.Forbidden:
-            note = (
-                f"\n⚠️ Couldn't give them the {role.mention} role — I need **Manage "
-                "Roles**, and my own role must sit **above** it in Server Settings."
-            )
-        except discord.HTTPException:
-            note = f"\n⚠️ Something went wrong assigning the {role.mention} role."
-
-    store["roster"].append(
-        {
-            "id": member.id,
-            "name": member.display_name,
-            "note": rank,
-            "added_by": str(interaction.user),
-            "at": now_stamp(),
-        }
-    )
-    save_data(DATA)
-    await interaction.response.send_message(
-        f"Added {member.mention} to the roster. ✅{note}"
-    )
+    elif role_fail:
+        lines.append(
+            f"⚠️ Couldn't give the {role.mention} role to {', '.join(role_fail)} "
+            "— check I have **Manage Roles** and my role sits above it."
+        )
+    await interaction.response.send_message("\n".join(lines) or "Nothing to add.")
 
 
 @roster_group.command(
@@ -634,61 +661,201 @@ async def roster_reset(interaction: discord.Interaction) -> None:
 
 # ---- /kos ------------------------------------------------------------------- #
 
+def _kos_role(guild: discord.Guild, store: dict[str, Any]) -> discord.Role | None:
+    """The configured KOS role for this guild, or None if unset/deleted."""
+    rid = store.get("kos_role_id")
+    return guild.get_role(rid) if rid else None
+
+
+def _kos_embed(entries: list[dict[str, Any]]) -> discord.Embed:
+    embed = discord.Embed(title="💀 KOS List", color=EMBED_COLOR)
+    if not entries:
+        embed.description = "The KOS list is empty."
+        return embed
+    lines = []
+    for i, e in enumerate(entries, start=1):
+        who = f"<@{e['id']}>" if e.get("id") else e.get("name", "Unknown")
+        note = e.get("note")
+        line = f"**{i}.** {who}"
+        if note:
+            line += f" — {note}"
+        lines.append(line)
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=f"{len(entries)} on sight")
+    return embed
+
+
+@kos_group.command(
+    name="set_role",
+    description="Set the role given to people added to KOS (leadership only)",
+)
+@app_commands.describe(role="The role to hand out when someone is KOS'd")
+async def kos_set_role(interaction: discord.Interaction, role: discord.Role) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set the KOS role.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["kos_role_id"] = role.id
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"People added to KOS will now be given the {role.mention} role. ✅",
+        ephemeral=True,
+    )
+
+
 @kos_group.command(name="view", description="Show the Kill-On-Sight list")
 async def kos_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    embed = _format_list("💀 KOS List", store["kos"], "The KOS list is empty.")
+    embed = _kos_embed(store["kos"])
     await interaction.response.send_message(embed=embed)
 
 
-@kos_group.command(name="add", description="Add a player or gang to the KOS list")
+@kos_group.command(
+    name="add",
+    description="Add up to 5 members to the KOS list and give them the KOS role",
+)
 @app_commands.describe(
-    name="Player or gang name",
-    reason="Optional reason (e.g. shot on sight, rival gang)",
+    member="Member to KOS (@mention them)",
+    member2="Another member (optional)",
+    member3="Another member (optional)",
+    member4="Another member (optional)",
+    member5="Another member (optional)",
+    reason="Optional reason applied to everyone added",
 )
 async def kos_add(
-    interaction: discord.Interaction, name: str, reason: str | None = None
+    interaction: discord.Interaction,
+    member: discord.Member,
+    member2: discord.Member | None = None,
+    member3: discord.Member | None = None,
+    member4: discord.Member | None = None,
+    member5: discord.Member | None = None,
+    reason: str | None = None,
 ) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    if any(k["name"].lower() == name.lower() for k in store["kos"]):
-        await interaction.response.send_message(
-            f"**{name}** is already on the KOS list.", ephemeral=True
+    role = _kos_role(interaction.guild, store)
+    targets = _dedupe_members([member, member2, member3, member4, member5])
+
+    added, skipped, role_fail = [], [], []
+    for m in targets:
+        if any(k.get("id") == m.id for k in store["kos"]):
+            skipped.append(m.mention)
+            continue
+        if role is not None:
+            try:
+                await m.add_roles(role, reason=f"KOS add by {interaction.user}")
+            except (discord.Forbidden, discord.HTTPException):
+                role_fail.append(m.mention)
+        store["kos"].append(
+            {
+                "id": m.id,
+                "name": m.display_name,
+                "note": reason,
+                "added_by": str(interaction.user),
+                "at": now_stamp(),
+            }
         )
-        return
-    store["kos"].append(
-        {"name": name, "note": reason, "added_by": str(interaction.user), "at": now_stamp()}
-    )
+        added.append(m.mention)
     save_data(DATA)
-    await interaction.response.send_message(f"Added **{name}** to the KOS list. 💀")
+
+    lines = []
+    if added:
+        lines.append(f"💀 Added {', '.join(added)} to the KOS list.")
+    if skipped:
+        lines.append(f"ℹ️ Already KOS: {', '.join(skipped)}.")
+    if role is None:
+        lines.append(
+            "⚠️ No KOS role set — run `/kos set_role` so they get one automatically."
+        )
+    elif role_fail:
+        lines.append(
+            f"⚠️ Couldn't give the {role.mention} role to {', '.join(role_fail)} "
+            "— check I have **Manage Roles** and my role sits above it."
+        )
+    await interaction.response.send_message("\n".join(lines) or "Nothing to add.")
 
 
-@kos_group.command(name="remove", description="Remove an entry from the KOS list")
-@app_commands.describe(name="The name to remove")
-async def kos_remove(interaction: discord.Interaction, name: str) -> None:
+@kos_group.command(
+    name="remove",
+    description="Remove a member from the KOS list and take the role back",
+)
+@app_commands.describe(member="The member to remove (@mention them)")
+async def kos_remove(
+    interaction: discord.Interaction, member: discord.Member
+) -> None:
     store = guild_store(DATA, interaction.guild_id)
     before = len(store["kos"])
-    store["kos"] = [k for k in store["kos"] if k["name"].lower() != name.lower()]
+    store["kos"] = [k for k in store["kos"] if k.get("id") != member.id]
     if len(store["kos"]) == before:
         await interaction.response.send_message(
-            f"Couldn't find **{name}** on the KOS list.", ephemeral=True
+            f"{member.mention} isn't on the KOS list.", ephemeral=True
         )
         return
+
+    role = _kos_role(interaction.guild, store)
+    note = ""
+    if role is not None and role in member.roles:
+        try:
+            await member.remove_roles(role, reason=f"KOS remove by {interaction.user}")
+        except (discord.Forbidden, discord.HTTPException):
+            note = f"\n⚠️ Couldn't take the {role.mention} role off them."
+
     save_data(DATA)
-    await interaction.response.send_message(f"Removed **{name}** from the KOS list. 🗑️")
+    await interaction.response.send_message(
+        f"Removed {member.mention} from the KOS list. 🗑️{note}"
+    )
 
 
-@kos_group.command(name="reset", description="Wipe the KOS list (leadership only)")
+@kos_group.command(
+    name="reset",
+    description="Wipe the KOS list and take the role off everyone (leadership only)",
+)
 async def kos_reset(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
             "Only leadership can reset the KOS list.", ephemeral=True
         )
         return
+
     store = guild_store(DATA, interaction.guild_id)
-    count = len(store["kos"])
+    entries = list(store["kos"])
+    count = len(entries)
+
+    await interaction.response.defer()
+
+    role = _kos_role(interaction.guild, store)
+    stripped = 0
+    failed = 0
+    if role is not None:
+        for e in entries:
+            mid = e.get("id")
+            if not mid:
+                continue
+            member = interaction.guild.get_member(mid)
+            if member is None:
+                try:
+                    member = await interaction.guild.fetch_member(mid)
+                except (discord.NotFound, discord.HTTPException):
+                    continue
+            if role in member.roles:
+                try:
+                    await member.remove_roles(
+                        role, reason=f"KOS reset by {interaction.user}"
+                    )
+                    stripped += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    failed += 1
+
     store["kos"] = []
     save_data(DATA)
-    await interaction.response.send_message(f"KOS list wiped — {count} entries cleared. 🧹")
+
+    msg = f"KOS list wiped — {count} entries cleared. 🧹"
+    if role is not None:
+        msg += f" Took the {role.mention} role off {stripped}."
+        if failed:
+            msg += f" ({failed} I couldn't update — check my role position.)"
+    await interaction.followup.send(msg)
 
 
 # ---- /eoi_channel ----------------------------------------------------------- #
@@ -934,7 +1101,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="Roster",
         value=(
             "`/roster view` — show the roster\n"
-            "`/roster add @member [rank]` — add + give the roster role\n"
+            "`/roster add @members [rank]` — add up to 5 + give the roster role\n"
             "`/roster remove @member` — remove + take the role back\n"
             "`/roster set_role` — set the roster role (leadership)\n"
             "`/roster reset` — wipe it + strip the role (leadership)"
@@ -945,9 +1112,10 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="KOS",
         value=(
             "`/kos view` — show the KOS list\n"
-            "`/kos add` — add a player/gang\n"
-            "`/kos remove` — remove an entry\n"
-            "`/kos reset` — wipe it (leadership)"
+            "`/kos add @members [reason]` — KOS up to 5 + give the KOS role\n"
+            "`/kos remove @member` — remove + take the role back\n"
+            "`/kos set_role` — set the KOS role (leadership)\n"
+            "`/kos reset` — wipe it + strip the role (leadership)"
         ),
         inline=False,
     )
