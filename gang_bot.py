@@ -117,6 +117,11 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "log_channel_id": None,
             "ticket_log_channel_id": None,
             "order_log_channel_id": None,
+            "roster_log_channel_id": None,
+            "kos_log_channel_id": None,
+            "radio_log_channel_id": None,
+            "eoi_log_channel_id": None,
+            "member_log_channel_id": None,
             "orders": [],
             "next_order_id": 1,
             "ticket_types": [],
@@ -140,6 +145,11 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("log_channel_id", None)
     g.setdefault("ticket_log_channel_id", None)
     g.setdefault("order_log_channel_id", None)
+    g.setdefault("roster_log_channel_id", None)
+    g.setdefault("kos_log_channel_id", None)
+    g.setdefault("radio_log_channel_id", None)
+    g.setdefault("eoi_log_channel_id", None)
+    g.setdefault("member_log_channel_id", None)
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
     return g
@@ -179,6 +189,8 @@ LOG_CATEGORIES = {
     "roster": ("📋", "Roster", 0x3B82F6),
     "kos": ("💀", "KOS", 0xDC2626),
     "radio": ("📻", "Radio", 0xA855F7),
+    "eoi": ("📨", "Recruitment", 0x10B981),
+    "members": ("🎭", "Roles", 0xEC4899),
     "tickets": ("🎫", "Tickets", 0x0EA5E9),
     "orders": ("💰", "Orders", 0xF59E0B),
     "config": ("⚙️", "Config", 0x6B7280),
@@ -187,6 +199,11 @@ LOG_CATEGORIES = {
 
 # which stored channel each category logs to (falls back to the general log)
 LOG_ROUTING = {
+    "roster": "roster_log_channel_id",
+    "kos": "kos_log_channel_id",
+    "radio": "radio_log_channel_id",
+    "eoi": "eoi_log_channel_id",
+    "members": "member_log_channel_id",
     "tickets": "ticket_log_channel_id",
     "orders": "order_log_channel_id",
 }
@@ -320,6 +337,17 @@ class EOIView(discord.ui.View):
         else:
             note = f"Counted your **{choice.upper()}** vote."
         await interaction.followup.send(note, ephemeral=True)
+
+        if previous != choice:
+            vote_emoji = "✅" if choice == "yes" else "❌"
+            await send_log(
+                interaction.guild,
+                guild_store(DATA, interaction.guild_id),
+                f"{vote_emoji} Application vote: **{choice.upper()}**",
+                category="eoi",
+                actor=interaction.user,
+                fields=[("Tally", f"✅ {yes}  ·  ❌ {no}", True)],
+            )
 
     async def on_error(
         self,
@@ -460,6 +488,17 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             f"Your EOI has been sent to {channel.mention}. Good luck. 🫡",
             ephemeral=True,
         )
+        await send_log(
+            interaction.guild,
+            guild_store(DATA, interaction.guild_id),
+            "📨 New application submitted.",
+            category="eoi",
+            actor=interaction.user,
+            fields=[
+                ("Name", self.ign.value, True),
+                ("Discord", self.discord_name.value, True),
+            ],
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -526,6 +565,20 @@ class SelfRoleSelect(discord.ui.Select):
         await interaction.followup.send(
             "  •  ".join(parts) if parts else "No changes.", ephemeral=True
         )
+        if added or removed:
+            fields = []
+            if added:
+                fields.append(("Added", ", ".join(added), False))
+            if removed:
+                fields.append(("Removed", ", ".join(removed), False))
+            await send_log(
+                interaction.guild,
+                store,
+                "🎭 Self-roles updated.",
+                category="members",
+                actor=interaction.user,
+                fields=fields,
+            )
 
 
 class SelfRoleView(discord.ui.View):
@@ -672,6 +725,13 @@ async def roster_rank_set(
         f"Rank **{name_clean}** → {role.mention}. Pick it when adding to the roster. ✅",
         ephemeral=True,
     )
+    await send_log(
+        interaction.guild,
+        store,
+        f"🎖️ Rank **{name_clean}** mapped to {role.mention}.",
+        category="roster",
+        actor=interaction.user,
+    )
 
 
 @roster_group.command(
@@ -696,6 +756,13 @@ async def roster_rank_remove(interaction: discord.Interaction, name: str) -> Non
     save_data(DATA)
     await interaction.response.send_message(
         f"Removed rank **{name}**. 🗑️", ephemeral=True
+    )
+    await send_log(
+        interaction.guild,
+        store,
+        f"🎖️ Rank **{name}** removed.",
+        category="roster",
+        actor=interaction.user,
     )
 
 
@@ -1057,6 +1124,11 @@ async def kos_reset(interaction: discord.Interaction) -> None:
 CONFIG_SETTINGS = {
     "leadership_role": ("Leadership role", "leadership_role_id", "role"),
     "log_channel": ("General log channel", "log_channel_id", "channel"),
+    "roster_log_channel": ("Roster log channel", "roster_log_channel_id", "channel"),
+    "kos_log_channel": ("KOS log channel", "kos_log_channel_id", "channel"),
+    "radio_log_channel": ("Radio log channel", "radio_log_channel_id", "channel"),
+    "eoi_log_channel": ("Recruitment log channel", "eoi_log_channel_id", "channel"),
+    "member_log_channel": ("Role log channel", "member_log_channel_id", "channel"),
     "ticket_log_channel": ("Ticket log channel", "ticket_log_channel_id", "channel"),
     "order_log_channel": ("Order log channel", "order_log_channel_id", "channel"),
     "eoi_channel": ("EOI channel", "eoi_channel_id", "channel"),
@@ -1079,6 +1151,11 @@ CONFIG_SETTINGS = {
     setting=[
         app_commands.Choice(name="Leadership role (admin only)", value="leadership_role"),
         app_commands.Choice(name="General log channel", value="log_channel"),
+        app_commands.Choice(name="Roster log channel", value="roster_log_channel"),
+        app_commands.Choice(name="KOS log channel", value="kos_log_channel"),
+        app_commands.Choice(name="Radio log channel", value="radio_log_channel"),
+        app_commands.Choice(name="Recruitment log channel", value="eoi_log_channel"),
+        app_commands.Choice(name="Role log channel", value="member_log_channel"),
         app_commands.Choice(name="Ticket log channel", value="ticket_log_channel"),
         app_commands.Choice(name="Order log channel", value="order_log_channel"),
         app_commands.Choice(name="EOI channel", value="eoi_channel"),
@@ -1129,6 +1206,13 @@ async def config_set(
     await interaction.response.send_message(
         f"⚙️  **{label}** → {val}", ephemeral=True
     )
+    await send_log(
+        interaction.guild,
+        store,
+        f"⚙️ Setting changed: **{label}** → {val}",
+        category="config",
+        actor=interaction.user,
+    )
 
 
 @config_group.command(name="view", description="Show the current configuration")
@@ -1147,33 +1231,47 @@ async def config_view(interaction: discord.Interaction) -> None:
         return r.mention if r else "`— not set`"
 
     embed = discord.Embed(title="⚙️  Server Configuration", color=EMBED_COLOR)
-    embed.add_field(name="👑 Leadership", value=ro("leadership_role_id"), inline=True)
-    embed.add_field(name="📨 EOI channel", value=ch("eoi_channel_id"), inline=True)
     embed.add_field(
-        name="🧾 Transcripts", value=ch("transcript_channel_id"), inline=True
-    )
-    embed.add_field(name="📝 General log", value=ch("log_channel_id"), inline=True)
-    embed.add_field(
-        name="🎫 Ticket log", value=ch("ticket_log_channel_id"), inline=True
-    )
-    embed.add_field(
-        name="💰 Order log", value=ch("order_log_channel_id"), inline=True
-    )
-    embed.add_field(name="📋 Roster role", value=ro("roster_role_id"), inline=True)
-    embed.add_field(name="💀 KOS role", value=ro("kos_role_id"), inline=True)
-    embed.add_field(
-        name="📻 Radio ping", value=ro("radio_ping_role_id"), inline=True
+        name="👑 Roles",
+        value=(
+            f"Leadership: {ro('leadership_role_id')}\n"
+            f"Roster default: {ro('roster_role_id')}\n"
+            f"KOS: {ro('kos_role_id')}\n"
+            f"Radio ping: {ro('radio_ping_role_id')}"
+        ),
+        inline=False,
     )
     embed.add_field(
-        name="🎫 Ticket types",
-        value=str(len(store.get("ticket_types", []))),
-        inline=True,
+        name="📁 Channels",
+        value=(
+            f"EOI: {ch('eoi_channel_id')}\n"
+            f"Transcripts: {ch('transcript_channel_id')}"
+        ),
+        inline=False,
     )
     embed.add_field(
-        name="🎖️ Ranks", value=str(len(store.get("ranks", []))), inline=True
+        name="📝 Log channels",
+        value=(
+            f"General: {ch('log_channel_id')}\n"
+            f"📋 Roster: {ch('roster_log_channel_id')}\n"
+            f"💀 KOS: {ch('kos_log_channel_id')}\n"
+            f"📻 Radio: {ch('radio_log_channel_id')}\n"
+            f"📨 Recruitment: {ch('eoi_log_channel_id')}\n"
+            f"🎭 Roles: {ch('member_log_channel_id')}\n"
+            f"🎫 Tickets: {ch('ticket_log_channel_id')}\n"
+            f"💰 Orders: {ch('order_log_channel_id')}"
+        ),
+        inline=False,
     )
-    embed.add_field(name="​", value="​", inline=True)
-    embed.set_footer(text="Change anything with /config set")
+    embed.add_field(
+        name="📦 Content",
+        value=(
+            f"Ticket types: **{len(store.get('ticket_types', []))}**\n"
+            f"Ranks: **{len(store.get('ranks', []))}**"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Change anything with /config set · make them with /config log_setup")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -1212,14 +1310,19 @@ async def config_log_setup(interaction: discord.Interaction) -> None:
         category = await guild.create_category(
             "📁 Logs", overwrites=overwrites, reason=f"Log setup by {interaction.user}"
         )
-        # (channel name, store key)
+        # (channel name, store key, what it logs)
         to_make = [
-            ("gang-logs", "log_channel_id"),
-            ("ticket-logs", "ticket_log_channel_id"),
-            ("order-logs", "order_log_channel_id"),
+            ("gang-logs", "log_channel_id", "general & config"),
+            ("roster-logs", "roster_log_channel_id", "roster + ranks"),
+            ("kos-logs", "kos_log_channel_id", "KOS list"),
+            ("radio-logs", "radio_log_channel_id", "radio rolls"),
+            ("recruitment-logs", "eoi_log_channel_id", "EOI apps + votes"),
+            ("role-logs", "member_log_channel_id", "self-roles + role menu"),
+            ("ticket-logs", "ticket_log_channel_id", "tickets open/claim/close"),
+            ("order-logs", "order_log_channel_id", "orders marked paid"),
         ]
         made = []
-        for name, key in to_make:
+        for name, key, _desc in to_make:
             ch = await guild.create_text_channel(
                 name,
                 category=category,
@@ -1227,7 +1330,7 @@ async def config_log_setup(interaction: discord.Interaction) -> None:
                 reason=f"Log setup by {interaction.user}",
             )
             store[key] = ch.id
-            made.append(ch.mention)
+            made.append((ch.mention, _desc))
     except discord.Forbidden:
         await interaction.followup.send(
             "I couldn't create the channels — check my **Manage Channels** permission "
@@ -1242,12 +1345,9 @@ async def config_log_setup(interaction: discord.Interaction) -> None:
         return
 
     save_data(DATA)
+    lines = "\n".join(f"{mention} — {desc}" for mention, desc in made)
     await interaction.followup.send(
-        "Logging is on. Created:\n"
-        f"📝 {made[0]} — roster, KOS, radio, config\n"
-        f"🎫 {made[1]} — tickets opened / claimed / closed\n"
-        f"💰 {made[2]} — orders marked paid\n"
-        "✅",
+        f"Logging is on — created **{len(made)}** channels:\n{lines}\n✅",
         ephemeral=True,
     )
     await send_log(
@@ -1668,8 +1768,8 @@ async def gang_help(interaction: discord.Interaction) -> None:
             "`/config set` — channels & roles (logs, EOI, transcript, "
             "leadership, roster/KOS/radio roles)\n"
             "`/config view` — see all settings\n"
-            "`/config log_setup` — one-click: make separate log channels\n"
-            "(general · tickets · orders)"
+            "`/config log_setup` — one-click: 8 split log channels\n"
+            "(general · roster · kos · radio · recruitment · roles · tickets · orders)"
         ),
         inline=False,
     )
