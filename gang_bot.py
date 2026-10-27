@@ -96,13 +96,20 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     """Return (creating if needed) the data bucket for one guild."""
     g = data["guilds"].setdefault(
         str(guild_id),
-        {"roster": [], "kos": [], "eoi_channel_id": None, "roster_role_id": None},
+        {
+            "roster": [],
+            "kos": [],
+            "eoi_channel_id": None,
+            "roster_role_id": None,
+            "self_roles": [],
+        },
     )
     # make sure older save files get any new keys
     g.setdefault("roster", [])
     g.setdefault("kos", [])
     g.setdefault("eoi_channel_id", None)
     g.setdefault("roster_role_id", None)
+    g.setdefault("self_roles", [])
     return g
 
 
@@ -328,6 +335,82 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
 
 
 # --------------------------------------------------------------------------- #
+# Self-serve role menu (persistent dropdown)
+# --------------------------------------------------------------------------- #
+
+class SelfRoleSelect(discord.ui.Select):
+    """Dropdown that gives/removes the menu's roles based on the viewer's picks.
+
+    Whatever a member selects from this menu becomes their set of those roles:
+    selected ones are added, menu roles they leave unselected are removed. The
+    authoritative list of menu roles is read live from the guild's self_roles
+    config, so the handler keeps working after a restart.
+    """
+
+    def __init__(self, options: list[discord.SelectOption] | None = None) -> None:
+        opts = options or [discord.SelectOption(label="—", value="0")]
+        super().__init__(
+            custom_id="selfrole:menu",
+            placeholder="Select your roles…",
+            min_values=0,
+            max_values=len(opts),
+            options=opts,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        store = guild_store(DATA, interaction.guild_id)
+        menu_ids = [r["id"] for r in store.get("self_roles", [])]
+        if not menu_ids:
+            await interaction.followup.send(
+                "This role menu isn't set up anymore.", ephemeral=True
+            )
+            return
+
+        selected = {int(v) for v in self.values if v.isdigit()}
+        member = interaction.user
+        added, removed, failed = [], [], []
+        for rid in menu_ids:
+            role = interaction.guild.get_role(rid)
+            if role is None:
+                continue
+            has = role in member.roles
+            want = rid in selected
+            try:
+                if want and not has:
+                    await member.add_roles(role, reason="Self-role menu")
+                    added.append(role.mention)
+                elif not want and has:
+                    await member.remove_roles(role, reason="Self-role menu")
+                    removed.append(role.mention)
+            except discord.HTTPException:
+                failed.append(role.mention)
+
+        parts = []
+        if added:
+            parts.append("➕ " + ", ".join(added))
+        if removed:
+            parts.append("➖ " + ", ".join(removed))
+        if failed:
+            parts.append(
+                "⚠️ Couldn't change " + ", ".join(failed) + " (check my role position)"
+            )
+        await interaction.followup.send(
+            "  •  ".join(parts) if parts else "No changes.", ephemeral=True
+        )
+
+
+class SelfRoleView(discord.ui.View):
+    def __init__(self, options: list[discord.SelectOption] | None = None) -> None:
+        super().__init__(timeout=None)
+        self.add_item(SelfRoleSelect(options))
+
+
+# template instance registered on startup so the dropdown survives restarts
+SELF_ROLE_VIEW = SelfRoleView()
+
+
+# --------------------------------------------------------------------------- #
 # Command groups
 # --------------------------------------------------------------------------- #
 
@@ -335,6 +418,9 @@ roster_group = app_commands.Group(name="roster", description="Manage the gang ro
 kos_group = app_commands.Group(name="kos", description="Manage the Kill-On-Sight list")
 eoi_channel_group = app_commands.Group(
     name="eoi_channel", description="Configure the EOI channel"
+)
+role_menu_group = app_commands.Group(
+    name="role_menu", description="Self-serve role selection menu"
 )
 
 
@@ -641,6 +727,143 @@ async def eoi_channel_show(interaction: discord.Interaction) -> None:
     )
 
 
+# ---- /role_menu ------------------------------------------------------------- #
+
+@role_menu_group.command(
+    name="add", description="Add a role to the self-serve menu (leadership only)"
+)
+@app_commands.describe(
+    role="A role members can give themselves",
+    description="Optional short note shown next to the role in the dropdown",
+)
+async def role_menu_add(
+    interaction: discord.Interaction,
+    role: discord.Role,
+    description: str | None = None,
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can edit the role menu.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    roles = store["self_roles"]
+    if any(r["id"] == role.id for r in roles):
+        await interaction.response.send_message(
+            f"{role.mention} is already in the menu.", ephemeral=True
+        )
+        return
+    if len(roles) >= 25:
+        await interaction.response.send_message(
+            "A dropdown can hold at most 25 roles.", ephemeral=True
+        )
+        return
+    roles.append(
+        {
+            "id": role.id,
+            "label": role.name,
+            "description": (description.strip()[:100] if description else None),
+        }
+    )
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Added {role.mention} to the role menu. Run `/role_menu post` to "
+        "(re)post it so the change shows. ✅",
+        ephemeral=True,
+    )
+
+
+@role_menu_group.command(
+    name="remove", description="Remove a role from the self-serve menu (leadership only)"
+)
+@app_commands.describe(role="The role to take out of the menu")
+async def role_menu_remove(
+    interaction: discord.Interaction, role: discord.Role
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can edit the role menu.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    before = len(store["self_roles"])
+    store["self_roles"] = [r for r in store["self_roles"] if r["id"] != role.id]
+    if len(store["self_roles"]) == before:
+        await interaction.response.send_message(
+            f"{role.mention} isn't in the menu.", ephemeral=True
+        )
+        return
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Removed {role.mention}. Run `/role_menu post` to repost the menu. 🗑️",
+        ephemeral=True,
+    )
+
+
+@role_menu_group.command(name="list", description="Show the roles in the self-serve menu")
+async def role_menu_list(interaction: discord.Interaction) -> None:
+    store = guild_store(DATA, interaction.guild_id)
+    roles = store["self_roles"]
+    embed = discord.Embed(title="🎭 Role Menu", color=EMBED_COLOR)
+    if not roles:
+        embed.description = "No roles yet. Add some with `/role_menu add`."
+    else:
+        embed.description = "\n".join(
+            f"- <@&{r['id']}>" + (f" — {r['description']}" if r.get("description") else "")
+            for r in roles
+        )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@role_menu_group.command(
+    name="post",
+    description="Post the self-serve role menu in this channel (leadership only)",
+)
+@app_commands.describe(
+    title="Optional heading for the menu",
+    description="Optional text shown above the dropdown",
+)
+async def role_menu_post(
+    interaction: discord.Interaction,
+    title: str | None = None,
+    description: str | None = None,
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can post the role menu.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    options: list[discord.SelectOption] = []
+    for r in store["self_roles"]:
+        role = interaction.guild.get_role(r["id"])
+        if role is None:
+            continue
+        options.append(
+            discord.SelectOption(
+                label=role.name,
+                value=str(role.id),
+                description=r.get("description") or None,
+            )
+        )
+    if not options:
+        await interaction.response.send_message(
+            "No usable roles in the menu yet — add some with `/role_menu add` first.",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(
+        title=title or "🎭 Select Your Roles",
+        description=description
+        or "Pick the roles you want from the menu below. Anything you leave "
+        "unselected will be removed.",
+        color=EMBED_COLOR,
+    )
+    await interaction.channel.send(embed=embed, view=SelfRoleView(options))
+    await interaction.response.send_message("Role menu posted. ✅", ephemeral=True)
+
+
 # ---- /eoi (open the form) --------------------------------------------------- #
 
 @bot.tree.command(name="eoi", description="Apply to the gang — fill out an EOI form")
@@ -738,6 +961,16 @@ async def gang_help(interaction: discord.Interaction) -> None:
         ),
         inline=False,
     )
+    embed.add_field(
+        name="Role Menu",
+        value=(
+            "`/role_menu add` — add a self-serve role (leadership)\n"
+            "`/role_menu remove` — remove one (leadership)\n"
+            "`/role_menu list` — show the menu's roles\n"
+            "`/role_menu post` — post the dropdown here (leadership)"
+        ),
+        inline=False,
+    )
     embed.set_footer(text=f"Leadership role: {LEADERSHIP_ROLE_NAME}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -749,13 +982,15 @@ async def gang_help(interaction: discord.Interaction) -> None:
 bot.tree.add_command(roster_group)
 bot.tree.add_command(kos_group)
 bot.tree.add_command(eoi_channel_group)
+bot.tree.add_command(role_menu_group)
 
 
 @bot.event
 async def on_ready() -> None:
-    # register persistent views so buttons survive restarts
+    # register persistent views so buttons/menus survive restarts
     bot.add_view(EOI_VIEW)
     bot.add_view(EOIPromptView())
+    bot.add_view(SELF_ROLE_VIEW)
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))

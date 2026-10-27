@@ -20,6 +20,10 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | `/eoi_post [message]` | Post an "Apply" button in the current channel | Leadership |
 | `/eoi_channel set <channel>` | Choose where EOIs get sent | Leadership |
 | `/eoi_channel show` | Show the current EOI channel | Everyone |
+| `/role_menu add <role> [description]` | Add a role to the self-serve dropdown | Leadership |
+| `/role_menu remove <role>` | Remove a role from the dropdown | Leadership |
+| `/role_menu list` | Show the dropdown's roles | Everyone |
+| `/role_menu post [title] [description]` | Post the self-serve role dropdown in this channel | Leadership |
 | `/gang_help` | List all commands | Everyone |
 
 ## Setup
