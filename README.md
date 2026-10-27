@@ -31,8 +31,9 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | `/ticket type_add <name> [category] [emoji]` | Add a ticket type (Gang Orders, Vendors, Gun Crafting…) + its channel category | Leadership |
 | `/ticket type_remove <name>` / `type_list` | Remove / list types | Leadership / Everyone |
 | `/ticket panel [message]` | Post a dropdown menu of types; picking one opens a private ticket | Leadership |
+| `/ticket toggle` | Open or close new ticket orders for everyone | Leadership |
 | `/ticket board` | Active orders grouped by type, paid/unpaid | Staff |
-| `/ticket close` | Close the ticket you're in (saves transcript, deletes channel) | Staff |
+| `/close` | Close the ticket you're in (saves transcript, deletes channel) | Staff |
 | (in ticket) 💰 Mark Paid · 🔒 Close | Mark paid, or close → transcript then delete | Staff |
 
 ### Recruitment · Radio · Roles
