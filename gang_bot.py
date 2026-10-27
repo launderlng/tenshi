@@ -27,6 +27,7 @@ Set the bot token in the DISCORD_TOKEN environment variable.
 """
 
 import os
+import re
 import json
 import logging
 import datetime
@@ -95,12 +96,13 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     """Return (creating if needed) the data bucket for one guild."""
     g = data["guilds"].setdefault(
         str(guild_id),
-        {"roster": [], "kos": [], "eoi_channel_id": None},
+        {"roster": [], "kos": [], "eoi_channel_id": None, "roster_role_id": None},
     )
     # make sure older save files get any new keys
     g.setdefault("roster", [])
     g.setdefault("kos", [])
     g.setdefault("eoi_channel_id", None)
+    g.setdefault("roster_role_id", None)
     return g
 
 
@@ -123,6 +125,24 @@ def is_leadership(member: discord.Member) -> bool:
 
 def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+# Matches the video id in the common YouTube URL shapes:
+#   youtube.com/watch?v=ID, youtu.be/ID, youtube.com/shorts/ID, /embed/ID, /live/ID
+_YT_RE = re.compile(
+    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/|live/)|youtu\.be/)"
+    r"([A-Za-z0-9_-]{11})"
+)
+
+
+def youtube_thumbnail(url: str | None) -> str | None:
+    """Return the thumbnail image URL for a YouTube link, or None if it isn't one."""
+    if not url:
+        return None
+    match = _YT_RE.search(url)
+    if not match:
+        return None
+    return f"https://img.youtube.com/vi/{match.group(1)}/hqdefault.jpg"
 
 
 # --------------------------------------------------------------------------- #
@@ -166,10 +186,12 @@ class EOIView(discord.ui.View):
 
         yes, no = self._tally(msg.id)
 
-        # update the embed footer with the live tally
+        # Acknowledge the interaction AND update the embed in a single call.
+        # This responds within Discord's 3-second window. The old version edited
+        # the message first and only then replied, which could miss the deadline
+        # and surface as "Tenshi didn't respond in time".
         embed = msg.embeds[0] if msg.embeds else discord.Embed()
         embed.set_footer(text=f"✅ {yes}   •   ❌ {no}")
-        await msg.edit(embed=embed, view=self)
 
         if previous == choice:
             note = f"Your **{choice.upper()}** vote is already counted."
@@ -177,7 +199,13 @@ class EOIView(discord.ui.View):
             note = f"Changed your vote to **{choice.upper()}**."
         else:
             note = f"Counted your **{choice.upper()}** vote."
-        await interaction.response.send_message(note, ephemeral=True)
+
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except discord.InteractionResponded:
+            # Already acknowledged somehow; fall back to editing the message.
+            await msg.edit(embed=embed, view=self)
+        await interaction.followup.send(note, ephemeral=True)
 
     @discord.ui.button(
         label="Yes",
@@ -286,6 +314,10 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             name=str(interaction.user),
             icon_url=interaction.user.display_avatar.url,
         )
+        # Show the montage's YouTube thumbnail as a clickable preview image.
+        thumb = youtube_thumbnail(montage_val if montage_val != "—" else None)
+        if thumb:
+            embed.set_image(url=thumb)
         embed.set_footer(text="✅ 0   •   ❌ 0")
 
         await channel.send(embed=embed, view=EOI_VIEW)
@@ -326,61 +358,192 @@ def _format_list(title: str, entries: list[dict[str, Any]], empty: str) -> disco
 
 # ---- /roster ---------------------------------------------------------------- #
 
+def _roster_role(guild: discord.Guild, store: dict[str, Any]) -> discord.Role | None:
+    """The configured roster role for this guild, or None if unset/deleted."""
+    rid = store.get("roster_role_id")
+    return guild.get_role(rid) if rid else None
+
+
+def _roster_embed(entries: list[dict[str, Any]]) -> discord.Embed:
+    embed = discord.Embed(title="🎯 Gang Roster", color=EMBED_COLOR)
+    if not entries:
+        embed.description = "The roster is empty."
+        return embed
+    lines = []
+    for i, e in enumerate(entries, start=1):
+        who = f"<@{e['id']}>" if e.get("id") else e.get("name", "Unknown")
+        note = e.get("note")
+        line = f"**{i}.** {who}"
+        if note:
+            line += f" — {note}"
+        lines.append(line)
+    embed.description = "\n".join(lines)
+    embed.set_footer(text=f"{len(entries)} members")
+    return embed
+
+
+@roster_group.command(
+    name="set_role",
+    description="Set the role given to roster members (leadership only)",
+)
+@app_commands.describe(role="The role to hand out when someone is added to the roster")
+async def roster_set_role(
+    interaction: discord.Interaction, role: discord.Role
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set the roster role.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["roster_role_id"] = role.id
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Roster members will now be given the {role.mention} role. ✅", ephemeral=True
+    )
+
+
 @roster_group.command(name="view", description="Show the current gang roster")
 async def roster_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    embed = _format_list("🎯 Gang Roster", store["roster"], "The roster is empty.")
+    embed = _roster_embed(store["roster"])
     await interaction.response.send_message(embed=embed)
 
 
-@roster_group.command(name="add", description="Add a member to the roster")
+@roster_group.command(
+    name="add", description="Add a member to the roster and give them the roster role"
+)
 @app_commands.describe(
-    name="Member name / RP name",
-    role="Optional rank or role note (e.g. OG, Prospect, Driver)",
+    member="The Discord member to add (@mention them)",
+    rank="Optional rank or role note (e.g. OG, Prospect, Driver)",
 )
 async def roster_add(
-    interaction: discord.Interaction, name: str, role: str | None = None
+    interaction: discord.Interaction,
+    member: discord.Member,
+    rank: str | None = None,
 ) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    if any(m["name"].lower() == name.lower() for m in store["roster"]):
+    if any(m.get("id") == member.id for m in store["roster"]):
         await interaction.response.send_message(
-            f"**{name}** is already on the roster.", ephemeral=True
+            f"{member.mention} is already on the roster.", ephemeral=True
         )
         return
+
+    role = _roster_role(interaction.guild, store)
+    note = ""
+    if role is None:
+        note = (
+            "\n⚠️ No roster role is set — run `/roster set_role` so members get one "
+            "automatically."
+        )
+    else:
+        try:
+            await member.add_roles(role, reason=f"Roster add by {interaction.user}")
+        except discord.Forbidden:
+            note = (
+                f"\n⚠️ Couldn't give them the {role.mention} role — I need **Manage "
+                "Roles**, and my own role must sit **above** it in Server Settings."
+            )
+        except discord.HTTPException:
+            note = f"\n⚠️ Something went wrong assigning the {role.mention} role."
+
     store["roster"].append(
-        {"name": name, "note": role, "added_by": str(interaction.user), "at": now_stamp()}
+        {
+            "id": member.id,
+            "name": member.display_name,
+            "note": rank,
+            "added_by": str(interaction.user),
+            "at": now_stamp(),
+        }
     )
     save_data(DATA)
-    await interaction.response.send_message(f"Added **{name}** to the roster. ✅")
+    await interaction.response.send_message(
+        f"Added {member.mention} to the roster. ✅{note}"
+    )
 
 
-@roster_group.command(name="remove", description="Remove a member from the roster")
-@app_commands.describe(name="The member name to remove")
-async def roster_remove(interaction: discord.Interaction, name: str) -> None:
+@roster_group.command(
+    name="remove",
+    description="Remove a member from the roster and take the role back",
+)
+@app_commands.describe(member="The member to remove (@mention them)")
+async def roster_remove(
+    interaction: discord.Interaction, member: discord.Member
+) -> None:
     store = guild_store(DATA, interaction.guild_id)
     before = len(store["roster"])
-    store["roster"] = [m for m in store["roster"] if m["name"].lower() != name.lower()]
+    store["roster"] = [m for m in store["roster"] if m.get("id") != member.id]
     if len(store["roster"]) == before:
         await interaction.response.send_message(
-            f"Couldn't find **{name}** on the roster.", ephemeral=True
+            f"{member.mention} isn't on the roster.", ephemeral=True
         )
         return
+
+    role = _roster_role(interaction.guild, store)
+    note = ""
+    if role is not None and role in member.roles:
+        try:
+            await member.remove_roles(role, reason=f"Roster remove by {interaction.user}")
+        except (discord.Forbidden, discord.HTTPException):
+            note = f"\n⚠️ Couldn't take the {role.mention} role off them."
+
     save_data(DATA)
-    await interaction.response.send_message(f"Removed **{name}** from the roster. 🗑️")
+    await interaction.response.send_message(
+        f"Removed {member.mention} from the roster. 🗑️{note}"
+    )
 
 
-@roster_group.command(name="reset", description="Wipe the entire roster (leadership only)")
+@roster_group.command(
+    name="reset",
+    description="Wipe the roster and take the role off everyone (leadership only)",
+)
 async def roster_reset(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
             "Only leadership can reset the roster.", ephemeral=True
         )
         return
+
     store = guild_store(DATA, interaction.guild_id)
-    count = len(store["roster"])
+    entries = list(store["roster"])
+    count = len(entries)
+
+    # Stripping the role off many members can take longer than Discord's 3s
+    # window, so acknowledge first and follow up when done.
+    await interaction.response.defer()
+
+    role = _roster_role(interaction.guild, store)
+    stripped = 0
+    failed = 0
+    if role is not None:
+        for e in entries:
+            mid = e.get("id")
+            if not mid:
+                continue
+            member = interaction.guild.get_member(mid)
+            if member is None:
+                try:
+                    member = await interaction.guild.fetch_member(mid)
+                except (discord.NotFound, discord.HTTPException):
+                    continue
+            if role in member.roles:
+                try:
+                    await member.remove_roles(
+                        role, reason=f"Roster reset by {interaction.user}"
+                    )
+                    stripped += 1
+                except (discord.Forbidden, discord.HTTPException):
+                    failed += 1
+
     store["roster"] = []
     save_data(DATA)
-    await interaction.response.send_message(f"Roster wiped — {count} entries cleared. 🧹")
+
+    msg = f"Roster wiped — {count} members cleared. 🧹"
+    if role is not None:
+        msg += f" Took the {role.mention} role off {stripped}."
+        if failed:
+            msg += f" ({failed} I couldn't update — check my role position.)"
+    await interaction.followup.send(msg)
 
 
 # ---- /kos ------------------------------------------------------------------- #
@@ -548,9 +711,10 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="Roster",
         value=(
             "`/roster view` — show the roster\n"
-            "`/roster add` — add a member\n"
-            "`/roster remove` — remove a member\n"
-            "`/roster reset` — wipe it (leadership)"
+            "`/roster add @member [rank]` — add + give the roster role\n"
+            "`/roster remove @member` — remove + take the role back\n"
+            "`/roster set_role` — set the roster role (leadership)\n"
+            "`/roster reset` — wipe it + strip the role (leadership)"
         ),
         inline=False,
     )
