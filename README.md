@@ -49,7 +49,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 |---|---|---|
 | `/config set <setting> [channel] [role]` | Set/clear any channel or role: leadership, general/ticket/order logs, EOI, transcript, roster, KOS, radio-ping | Leadership (leadership role = admin only) |
 | `/config view` | Show all current settings | Leadership |
-| `/config log_setup` | One-click: create a **Logs** category with separate `#gang-logs` (general), `#ticket-logs`, `#order-logs` channels | Leadership |
+| `/setup` | Guided one-command setup: creates missing log channels + a Tickets category and shows a checklist of what's left | Leadership |
 | `/gang_help` | List all commands | Everyone |
 
 ## Setup

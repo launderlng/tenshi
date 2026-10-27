@@ -1282,92 +1282,8 @@ async def config_view(interaction: discord.Interaction) -> None:
         ),
         inline=False,
     )
-    embed.set_footer(text="Change anything with /config set · make them with /config log_setup")
+    embed.set_footer(text="Change anything with /config set · create channels with /setup")
     await interaction.response.send_message(embed=embed, ephemeral=True)
-
-
-@config_group.command(
-    name="log_setup",
-    description="One-click: create separate log channels and start logging (leadership)",
-)
-async def config_log_setup(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set up logging.", ephemeral=True
-        )
-        return
-    await interaction.response.defer(ephemeral=True)
-
-    guild = interaction.guild
-    me = guild.me
-    if not me.guild_permissions.manage_channels:
-        await interaction.followup.send(
-            "I need the **Manage Channels** permission to create log channels. "
-            "Give me that, or use `/config set` with existing channels.",
-            ephemeral=True,
-        )
-        return
-
-    overwrites = {
-        guild.default_role: discord.PermissionOverwrite(view_channel=False),
-        me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-    }
-    lead = discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
-    if lead is not None:
-        overwrites[lead] = discord.PermissionOverwrite(view_channel=True)
-
-    store = guild_store(DATA, interaction.guild_id)
-    try:
-        category = await guild.create_category(
-            "📁 Logs", overwrites=overwrites, reason=f"Log setup by {interaction.user}"
-        )
-        # (channel name, store key, what it logs)
-        to_make = [
-            ("gang-logs", "log_channel_id", "general & config"),
-            ("roster-logs", "roster_log_channel_id", "roster + ranks"),
-            ("kos-logs", "kos_log_channel_id", "KOS list"),
-            ("radio-logs", "radio_log_channel_id", "radio rolls"),
-            ("recruitment-logs", "eoi_log_channel_id", "EOI apps + votes"),
-            ("role-logs", "member_log_channel_id", "self-roles + role menu"),
-            ("ticket-logs", "ticket_log_channel_id", "tickets open/claim/close"),
-            ("order-logs", "order_log_channel_id", "orders marked paid"),
-        ]
-        made = []
-        for name, key, _desc in to_make:
-            ch = await guild.create_text_channel(
-                name,
-                category=category,
-                overwrites=overwrites,
-                reason=f"Log setup by {interaction.user}",
-            )
-            store[key] = ch.id
-            made.append((ch.mention, _desc))
-    except discord.Forbidden:
-        await interaction.followup.send(
-            "I couldn't create the channels — check my **Manage Channels** permission "
-            "and that my role is high enough.",
-            ephemeral=True,
-        )
-        return
-    except discord.HTTPException:
-        await interaction.followup.send(
-            "Something went wrong creating the channels.", ephemeral=True
-        )
-        return
-
-    save_data(DATA)
-    lines = "\n".join(f"{mention} — {desc}" for mention, desc in made)
-    await interaction.followup.send(
-        f"Logging is on — created **{len(made)}** channels:\n{lines}\n✅",
-        ephemeral=True,
-    )
-    await send_log(
-        guild,
-        store,
-        f"Logging set up by {interaction.user.mention}.",
-        category="config",
-        actor=interaction.user,
-    )
 
 
 # ---- /role_menu ------------------------------------------------------------- #
@@ -1781,9 +1697,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
             "`/setup` — guided one-command setup ⭐\n"
             "`/config set` — channels & roles (logs, EOI, transcript, "
             "leadership, roster/KOS/radio roles)\n"
-            "`/config view` — see all settings\n"
-            "`/config log_setup` — one-click: 8 split log channels\n"
-            "(general · roster · kos · radio · recruitment · roles · tickets · orders)"
+            "`/config view` — see all settings"
         ),
         inline=False,
     )
@@ -1903,36 +1817,77 @@ async def _close_ticket(
     guild = interaction.guild
     channel = interaction.channel
 
-    tcid = store.get("transcript_channel_id")
-    tchannel = guild.get_channel(tcid) if tcid else None
-    if tchannel is not None:
-        transcript = await _build_transcript(channel)
-        fp = io.BytesIO(transcript.encode("utf-8"))
-        oid = order["id"] if order else channel.name
-        summary = discord.Embed(
-            title=f"🧾  Transcript · {(order.get('type') if order else 'Ticket')} #{oid}",
+    oid = order["id"] if order else channel.name
+    ttype = (order.get("type") if order else "Ticket") or "Ticket"
+    transcript = await _build_transcript(channel)
+    fname = f"ticket-{oid}.txt"
+
+    def _summary_embed() -> discord.Embed:
+        e = discord.Embed(
+            title=f"🧾  Transcript · {ttype} #{oid}",
             color=EMBED_COLOR,
             timestamp=datetime.datetime.now(datetime.timezone.utc),
         )
         if order:
-            summary.add_field(
-                name="👤 Customer", value=f"<@{order['user_id']}>", inline=True
-            )
-            summary.add_field(
-                name="💵 Paid",
+            e.add_field(name="Customer", value=f"<@{order['user_id']}>", inline=True)
+            e.add_field(
+                name="Paid",
                 value="🟢 Yes" if order.get("paid") else "🔴 No",
                 inline=True,
             )
-            summary.add_field(
-                name="🔫 Items", value=order.get("guns") or "—", inline=False
-            )
-        summary.set_footer(text=f"Closed by {interaction.user}")
+            e.add_field(name="Items", value=order.get("guns") or "—", inline=False)
+        e.set_footer(text=f"Closed by {interaction.user}")
+        return e
+
+    # transcript goes to: the transcript channel if set, else the ticket log,
+    # else the general log
+    dest_id = (
+        store.get("transcript_channel_id")
+        or store.get("ticket_log_channel_id")
+        or store.get("log_channel_id")
+    )
+    dest = guild.get_channel(dest_id) if dest_id else None
+    if dest is not None:
         try:
-            await tchannel.send(
-                embed=summary, file=discord.File(fp, filename=f"ticket-{oid}.txt")
+            await dest.send(
+                embed=_summary_embed(),
+                file=discord.File(io.BytesIO(transcript.encode("utf-8")), filename=fname),
             )
         except discord.HTTPException:
             pass
+
+    # DM the customer a copy of their closed ticket
+    if order is not None:
+        member = guild.get_member(order["user_id"])
+        if member is None:
+            try:
+                member = await guild.fetch_member(order["user_id"])
+            except (discord.NotFound, discord.HTTPException):
+                member = None
+        if member is not None:
+            dm = discord.Embed(
+                title=f"🔒  Your {ttype} ticket was closed",
+                description=f"Ticket **#{oid}** in **{guild.name}** has been closed.",
+                color=EMBED_COLOR,
+                timestamp=datetime.datetime.now(datetime.timezone.utc),
+            )
+            if order.get("guns"):
+                dm.add_field(name="Items", value=order["guns"], inline=False)
+            dm.add_field(
+                name="Paid",
+                value="🟢 Yes" if order.get("paid") else "🔴 No",
+                inline=True,
+            )
+            dm.set_footer(text="A transcript is attached.")
+            try:
+                await member.send(
+                    embed=dm,
+                    file=discord.File(
+                        io.BytesIO(transcript.encode("utf-8")), filename=fname
+                    ),
+                )
+            except discord.HTTPException:
+                pass  # customer has DMs closed — nothing we can do
 
     if order is not None:
         order["status"] = "closed"
@@ -2646,7 +2601,7 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
     checklist = [
         f"{mark(store.get('leadership_role_id') or lead)} **Leadership role** — "
         "`/config set leadership_role`",
-        f"{mark(store.get('log_channel_id'))} **Log channels** — created / `/config log_setup`",
+        f"{mark(store.get('log_channel_id'))} **Log channels** — created by setup",
         f"{mark(store.get('ticket_category_id'))} **Tickets category** — "
         "`/ticket set_category`",
         f"{mark(store.get('ticket_types'))} **Ticket types** — `/ticket type_add` "
