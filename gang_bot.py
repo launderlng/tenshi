@@ -439,20 +439,21 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
         store = guild_store(DATA, interaction.guild_id)
         channel_id = store.get("eoi_channel_id")
 
         if channel_id is None:
-            await interaction.response.send_message(
-                "No EOI channel is set yet. Ask leadership to run "
-                "`/eoi_channel set` first.",
+            await interaction.followup.send(
+                "No EOI channel is set yet. Ask leadership to set one with "
+                "`/config set eoi_channel`.",
                 ephemeral=True,
             )
             return
 
         channel = interaction.guild.get_channel(channel_id)
         if channel is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "The configured EOI channel no longer exists. "
                 "Ask leadership to set it again.",
                 ephemeral=True,
@@ -495,7 +496,7 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
         embed.set_footer(text="✅ 0   •   ❌ 0")
 
         await channel.send(embed=embed, view=EOIView())
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Your EOI has been sent to {channel.mention}. Good luck. 🫡",
             ephemeral=True,
         )
@@ -1973,10 +1974,13 @@ class OrderModal(discord.ui.Modal):
         self.add_item(self.notes)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        # Ack immediately — creating the channel is an API call that can take
+        # longer than Discord's 3s window, which would otherwise 404 the modal.
+        await interaction.response.defer(ephemeral=True)
         guild = interaction.guild
         me = guild.me
         if not me.guild_permissions.manage_channels:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I can't open a ticket — I need the **Manage Channels** permission. "
                 "Tell staff.",
                 ephemeral=True,
@@ -2018,14 +2022,14 @@ class OrderModal(discord.ui.Modal):
                 reason=f"{self.ticket_type} order by {interaction.user}",
             )
         except discord.Forbidden:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "I couldn't open a ticket channel — check my **Manage Channels** "
                 "permission and role position.",
                 ephemeral=True,
             )
             return
         except discord.HTTPException:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Something went wrong opening the ticket.", ephemeral=True
             )
             return
@@ -2057,7 +2061,7 @@ class OrderModal(discord.ui.Modal):
         order["message_id"] = msg.id
         save_data(DATA)
 
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"Your {self.ticket_type} ticket is open: {channel.mention} ✅",
             ephemeral=True,
         )
