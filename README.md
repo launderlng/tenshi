@@ -25,6 +25,8 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | `/role_menu remove <role>` | Remove a role from the dropdown | Leadership |
 | `/role_menu list` | Show the dropdown's roles | Everyone |
 | `/role_menu post [title] [description]` | Post the self-serve role dropdown in this channel | Leadership |
+| `/radio panel` | Post an embed with a **New Radio** button that rolls a fresh frequency | Leadership |
+| `/radio set_ping <role>` | Set the role pinged when a new radio is rolled | Leadership |
 | `/radio new` | Roll a new random radio frequency and post it in this channel | Leadership |
 | `/radio view` | Show the current radio frequency | Everyone |
 | `/gang_help` | List all commands | Everyone |
