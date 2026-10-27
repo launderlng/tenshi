@@ -188,8 +188,14 @@ async def send_log(
     *,
     category: str = "activity",
     actor: "discord.abc.User | None" = None,
+    fields: "list[tuple[str, str, bool]] | None" = None,
+    channel_ctx: "discord.abc.GuildChannel | None" = None,
 ) -> None:
-    """Post a categorized audit entry to the configured log channel, if one is set."""
+    """Post a categorized, detailed audit entry to the log channel, if one is set.
+
+    `fields` is a list of (name, value, inline) tuples for extra detail.
+    `channel_ctx` adds a 'Channel' field pointing at where the action happened.
+    """
     cid = store.get("log_channel_id")
     if not cid:
         return
@@ -204,9 +210,15 @@ async def send_log(
     )
     embed.set_author(name=f"{emoji} {label}")
     if actor is not None:
-        embed.set_footer(
-            text=f"by {actor}", icon_url=actor.display_avatar.url
+        embed.add_field(
+            name="Member", value=f"{actor.mention}\n`{actor}` · `{actor.id}`", inline=True
         )
+    if channel_ctx is not None:
+        embed.add_field(name="Channel", value=channel_ctx.mention, inline=True)
+    for name, value, inline in fields or []:
+        embed.add_field(name=name, value=value or "—", inline=inline)
+    if actor is not None:
+        embed.set_footer(text=str(actor), icon_url=actor.display_avatar.url)
     try:
         await channel.send(embed=embed)
     except discord.HTTPException:
@@ -774,9 +786,14 @@ async def roster_add(
         await send_log(
             interaction.guild,
             store,
-            f"{interaction.user.mention} added {', '.join(added)} to the roster{as_rank}.",
+            f"📋 Added **{len(added)}** to the roster{as_rank}.",
             category="roster",
             actor=interaction.user,
+            fields=[
+                ("Members", ", ".join(added), False),
+                ("Rank", rank or "—", True),
+                ("Roster size", str(len(store["roster"])), True),
+            ],
         )
 
 
@@ -946,9 +963,14 @@ async def kos_add(
         await send_log(
             interaction.guild,
             store,
-            f"{interaction.user.mention} added {', '.join(added)} to the KOS list.",
+            f"💀 Added **{len(added)}** to the KOS list.",
             category="kos",
             actor=interaction.user,
+            fields=[
+                ("Targets", ", ".join(added), False),
+                ("Reason", reason or "—", True),
+                ("KOS size", str(len(store["kos"])), True),
+            ],
         )
 
 
@@ -1415,9 +1437,10 @@ class RadioPanelView(discord.ui.View):
         await send_log(
             interaction.guild,
             store,
-            f"{interaction.user.mention} rolled a new radio: `{freq}`.",
+            "📻 New radio frequency rolled.",
             category="radio",
             actor=interaction.user,
+            fields=[("Frequency", f"`{freq}`", True)],
         )
 
 
@@ -1447,9 +1470,10 @@ async def radio_new(interaction: discord.Interaction) -> None:
     await send_log(
         interaction.guild,
         store,
-        f"{interaction.user.mention} rolled a new radio: `{freq}`.",
+        "📻 New radio frequency rolled.",
         category="radio",
         actor=interaction.user,
+        fields=[("Frequency", f"`{freq}`", True)],
     )
 
 
@@ -1659,6 +1683,19 @@ def _order_embed(order: dict[str, Any]) -> discord.Embed:
     embed.add_field(name="👤 Customer", value=f"<@{order['user_id']}>", inline=True)
     embed.add_field(name="🏷️ Type", value=f"`{ttype}`", inline=True)
     embed.add_field(name="💵 Status", value=status, inline=True)
+    claimed = order.get("claimed_by")
+    embed.add_field(
+        name="🙋 Handled by",
+        value=f"<@{claimed}>" if claimed else "`unclaimed`",
+        inline=True,
+    )
+    created = order.get("created_ts")
+    embed.add_field(
+        name="🕐 Opened",
+        value=f"<t:{created}:R>" if created else "`—`",
+        inline=True,
+    )
+    embed.add_field(name="​", value="​", inline=True)
     embed.add_field(
         name="🔫 Items", value=f">>> {order.get('guns') or '—'}", inline=False
     )
@@ -1764,10 +1801,15 @@ async def _close_ticket(
         await send_log(
             guild,
             store,
-            f"{interaction.user.mention} closed "
-            f"**{order.get('type', 'order')}** #{order['id']}.",
+            f"🔒 **{order.get('type', 'order')}** #{order['id']} closed.",
             category="orders",
             actor=interaction.user,
+            fields=[
+                ("Order", f"#{order['id']}", True),
+                ("Customer", f"<@{order['user_id']}>", True),
+                ("Paid", "🟢 Yes" if order.get("paid") else "🔴 No", True),
+                ("Items", order.get("guns") or "—", False),
+            ],
         )
 
     closing = discord.Embed(
@@ -1900,8 +1942,10 @@ class OrderModal(discord.ui.Modal):
             "notes": self.notes.value.strip(),
             "paid": False,
             "status": "open",
+            "claimed_by": None,
             "channel_id": channel.id,
             "created_at": now_stamp(),
+            "created_ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
         }
         store["orders"].append(order)
         save_data(DATA)
@@ -1923,9 +1967,16 @@ class OrderModal(discord.ui.Modal):
         await send_log(
             guild,
             store,
-            f"{interaction.user.mention} opened a **{self.ticket_type}** ticket #{oid}.",
+            f"🆕 New **{self.ticket_type}** ticket opened.",
             category="orders",
             actor=interaction.user,
+            channel_ctx=channel,
+            fields=[
+                ("Order", f"#{oid}", True),
+                ("Type", self.ticket_type, True),
+                ("Items", order["guns"] or "—", False),
+                ("Quantity", order["quantity"] or "—", True),
+            ],
         )
 
 
@@ -1960,10 +2011,54 @@ class TicketPanelView(discord.ui.View):
 
 
 class OrderTicketView(discord.ui.View):
-    """Staff buttons on a ticket: Mark Paid and Close."""
+    """Staff buttons on a ticket: Claim, Mark Paid and Close."""
 
     def __init__(self) -> None:
         super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Claim",
+        style=discord.ButtonStyle.secondary,
+        emoji="🙋",
+        custom_id="order:claim",
+    )
+    async def claim(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can claim tickets.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        store = guild_store(DATA, interaction.guild_id)
+        order = _find_order_by_channel(store, interaction.channel_id)
+        if order is None:
+            await interaction.followup.send(
+                "Couldn't find this order.", ephemeral=True
+            )
+            return
+        prev = order.get("claimed_by")
+        order["claimed_by"] = interaction.user.id
+        save_data(DATA)
+        await interaction.message.edit(embed=_order_embed(order), view=self)
+        verb = "reassigned to" if prev and prev != interaction.user.id else "claimed by"
+        await interaction.channel.send(f"🙋 Ticket {verb} {interaction.user.mention}.")
+        await interaction.followup.send(
+            "You're now handling this ticket. 🙋", ephemeral=True
+        )
+        await send_log(
+            interaction.guild,
+            store,
+            f"🙋 **{order.get('type', 'order')}** #{order['id']} claimed.",
+            category="orders",
+            actor=interaction.user,
+            channel_ctx=interaction.channel,
+            fields=[
+                ("Order", f"#{order['id']}", True),
+                ("Customer", f"<@{order['user_id']}>", True),
+            ],
+        )
 
     @discord.ui.button(
         label="Mark Paid",
@@ -1996,10 +2091,15 @@ class OrderTicketView(discord.ui.View):
         await send_log(
             interaction.guild,
             store,
-            f"{interaction.user.mention} marked "
-            f"**{order.get('type', 'order')}** #{order['id']} as PAID.",
+            f"💰 **{order.get('type', 'order')}** #{order['id']} marked **PAID**.",
             category="orders",
             actor=interaction.user,
+            channel_ctx=interaction.channel,
+            fields=[
+                ("Order", f"#{order['id']}", True),
+                ("Customer", f"<@{order['user_id']}>", True),
+                ("Items", order.get("guns") or "—", False),
+            ],
         )
 
     @discord.ui.button(
