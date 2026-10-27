@@ -2052,9 +2052,19 @@ class OrderModal(discord.ui.Modal):
         save_data(DATA)
 
         ping = f"<@{interaction.user.id}>" + (f" {lead.mention}" if lead else "")
+        welcome = discord.Embed(
+            description=(
+                f"👋 Thanks for your **{self.ticket_type}** order, "
+                f"<@{interaction.user.id}>!\n\n"
+                "Staff will be with you shortly. Add anything else you need below — "
+                "prices, timing, drop spot. A staff member will mark it paid once "
+                "sorted, then close the ticket (you'll get a transcript in your DMs)."
+            ),
+            color=EMBED_COLOR,
+        )
         msg = await channel.send(
             content=ping,
-            embed=_order_embed(order),
+            embeds=[welcome, _order_embed(order)],
             view=OrderTicketView(),
             allowed_mentions=discord.AllowedMentions(users=True, roles=True),
         )
