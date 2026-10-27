@@ -110,9 +110,11 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "log_channel_id": None,
             "orders": [],
             "next_order_id": 1,
+            "leadership_role_id": None,
         },
     )
     # make sure older save files get any new keys
+    g.setdefault("leadership_role_id", None)
     g.setdefault("roster", [])
     g.setdefault("kos", [])
     g.setdefault("eoi_channel_id", None)
@@ -139,8 +141,16 @@ DATA = load_data()
 
 
 def is_leadership(member: discord.Member) -> bool:
-    """True if the member has the leadership role or is a server admin."""
+    """True if the member is a server admin or has the configured leadership role.
+
+    The leadership role can be set in-server with /set_leadership (stored by id);
+    otherwise it falls back to a role named LEADERSHIP_ROLE_NAME.
+    """
     if member.guild_permissions.administrator:
+        return True
+    store = guild_store(DATA, member.guild.id)
+    rid = store.get("leadership_role_id")
+    if rid and any(r.id == rid for r in member.roles):
         return True
     return any(r.name == LEADERSHIP_ROLE_NAME for r in member.roles)
 
@@ -1512,6 +1522,31 @@ class EOIPromptView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         await interaction.response.send_modal(EOIModal())
+
+
+# ---- /set_leadership -------------------------------------------------------- #
+
+@bot.tree.command(
+    name="set_leadership",
+    description="Set the leadership role for staff-only commands (admin only)",
+)
+@app_commands.describe(role="The role that counts as leadership/staff")
+async def set_leadership(
+    interaction: discord.Interaction, role: discord.Role
+) -> None:
+    if not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "Only a server admin can set the leadership role.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["leadership_role_id"] = role.id
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"{role.mention} is now the leadership role. Only server admins and this "
+        "role can use staff commands, including rerolling the radio. ✅",
+        ephemeral=True,
+    )
 
 
 # ---- /gang_help ------------------------------------------------------------- #
