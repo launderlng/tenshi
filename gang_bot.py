@@ -406,17 +406,17 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             color=EMBED_COLOR,
             timestamp=datetime.datetime.now(datetime.timezone.utc),
         )
-        embed.add_field(name="Discord", value=self.discord_name.value, inline=True)
-        embed.add_field(name="Name", value=self.ign.value, inline=True)
+        embed.add_field(name="👤 Discord", value=self.discord_name.value, inline=True)
+        embed.add_field(name="🎮 Name", value=self.ign.value, inline=True)
         montage_val = self.montage.value.strip() or "—"
-        embed.add_field(name="Montage", value=montage_val, inline=False)
+        embed.add_field(name="🎬 Montage", value=montage_val, inline=False)
         embed.add_field(
-            name="Armoury",
+            name="🔫 Armoury",
             value=self.armoury.value.strip() or "—",
             inline=False,
         )
         embed.add_field(
-            name="Vouches / Previous Gangs",
+            name="🤝 Vouches / Previous Gangs",
             value=self.extra.value.strip() or "—",
             inline=False,
         )
@@ -519,8 +519,8 @@ SELF_ROLE_VIEW = SelfRoleView()
 
 roster_group = app_commands.Group(name="roster", description="Manage the gang roster")
 kos_group = app_commands.Group(name="kos", description="Manage the Kill-On-Sight list")
-eoi_channel_group = app_commands.Group(
-    name="eoi_channel", description="Configure the EOI channel"
+config_group = app_commands.Group(
+    name="config", description="Bot configuration — channels, roles, logging"
 )
 role_menu_group = app_commands.Group(
     name="role_menu", description="Self-serve role selection menu"
@@ -557,20 +557,22 @@ def _roster_role(guild: discord.Guild, store: dict[str, Any]) -> discord.Role | 
 
 
 def _roster_embed(entries: list[dict[str, Any]]) -> discord.Embed:
-    embed = discord.Embed(title="🎯 Gang Roster", color=EMBED_COLOR)
+    embed = discord.Embed(
+        title="🎯  Gang Roster",
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
     if not entries:
-        embed.description = "The roster is empty."
+        embed.description = "*Empty.* Add members with `/roster add`."
         return embed
     lines = []
     for i, e in enumerate(entries, start=1):
         who = f"<@{e['id']}>" if e.get("id") else e.get("name", "Unknown")
-        note = e.get("note")
-        line = f"**{i}.** {who}"
-        if note:
-            line += f" — {note}"
-        lines.append(line)
+        tag = f"  ·  `{e['note']}`" if e.get("note") else ""
+        lines.append(f"`{i:>2}`  {who}{tag}")
     embed.description = "\n".join(lines)
-    embed.set_footer(text=f"{len(entries)} members")
+    n = len(entries)
+    embed.set_footer(text=f"👥 {n} member{'s' if n != 1 else ''}")
     return embed
 
 
@@ -607,28 +609,6 @@ async def rank_autocomplete(
         for r in store.get("ranks", [])
         if cur in r["name"].lower()
     ][:25]
-
-
-@roster_group.command(
-    name="set_role",
-    description="Set the role given to roster members (leadership only)",
-)
-@app_commands.describe(role="The role to hand out when someone is added to the roster")
-async def roster_set_role(
-    interaction: discord.Interaction, role: discord.Role
-) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set the roster role.", ephemeral=True
-        )
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    store["roster_role_id"] = role.id
-    save_data(DATA)
-    await interaction.response.send_message(
-        f"Roster members will now be given the {role.mention} role by default. ✅",
-        ephemeral=True,
-    )
 
 
 @roster_group.command(
@@ -873,41 +853,23 @@ def _kos_role(guild: discord.Guild, store: dict[str, Any]) -> discord.Role | Non
 
 
 def _kos_embed(entries: list[dict[str, Any]]) -> discord.Embed:
-    embed = discord.Embed(title="💀 KOS List", color=EMBED_COLOR)
+    embed = discord.Embed(
+        title="💀  Kill On Sight",
+        color=0xDC2626,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
     if not entries:
-        embed.description = "The KOS list is empty."
+        embed.description = "*Empty.* Add targets with `/kos add`."
         return embed
     lines = []
     for i, e in enumerate(entries, start=1):
         who = f"<@{e['id']}>" if e.get("id") else e.get("name", "Unknown")
-        note = e.get("note")
-        line = f"**{i}.** {who}"
-        if note:
-            line += f" — {note}"
-        lines.append(line)
+        tag = f"  ·  `{e['note']}`" if e.get("note") else ""
+        lines.append(f"`{i:>2}`  {who}{tag}")
     embed.description = "\n".join(lines)
-    embed.set_footer(text=f"{len(entries)} on sight")
+    n = len(entries)
+    embed.set_footer(text=f"🎯 {n} on sight")
     return embed
-
-
-@kos_group.command(
-    name="set_role",
-    description="Set the role given to people added to KOS (leadership only)",
-)
-@app_commands.describe(role="The role to hand out when someone is KOS'd")
-async def kos_set_role(interaction: discord.Interaction, role: discord.Role) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set the KOS role.", ephemeral=True
-        )
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    store["kos_role_id"] = role.id
-    save_data(DATA)
-    await interaction.response.send_message(
-        f"People added to KOS will now be given the {role.mention} role. ✅",
-        ephemeral=True,
-    )
 
 
 @kos_group.command(name="view", description="Show the Kill-On-Sight list")
@@ -1054,73 +1016,126 @@ async def kos_reset(interaction: discord.Interaction) -> None:
     )
 
 
-# ---- /log_channel ----------------------------------------------------------- #
+# ---- /config (one command for every channel/role setting) ------------------- #
 
-log_channel_group = app_commands.Group(
-    name="log_channel", description="Configure the audit log channel"
+# setting value -> (label, store key, kind)
+CONFIG_SETTINGS = {
+    "leadership_role": ("Leadership role", "leadership_role_id", "role"),
+    "log_channel": ("Log channel", "log_channel_id", "channel"),
+    "eoi_channel": ("EOI channel", "eoi_channel_id", "channel"),
+    "transcript_channel": ("Transcript channel", "transcript_channel_id", "channel"),
+    "roster_role": ("Roster default role", "roster_role_id", "role"),
+    "kos_role": ("KOS role", "kos_role_id", "role"),
+    "radio_ping_role": ("Radio ping role", "radio_ping_role_id", "role"),
+}
+
+
+@config_group.command(
+    name="set", description="Set (or clear) a channel/role setting (leadership)"
 )
-
-
-@log_channel_group.command(
-    name="set", description="Set the channel bot actions are logged to (leadership only)"
+@app_commands.describe(
+    setting="Which setting to change",
+    channel="The channel — leave empty to clear a channel setting",
+    role="The role — leave empty to clear a role setting",
 )
-@app_commands.describe(channel="The channel to post audit logs in")
-async def log_channel_set(
-    interaction: discord.Interaction, channel: discord.TextChannel
+@app_commands.choices(
+    setting=[
+        app_commands.Choice(name="Leadership role (admin only)", value="leadership_role"),
+        app_commands.Choice(name="Log channel", value="log_channel"),
+        app_commands.Choice(name="EOI channel", value="eoi_channel"),
+        app_commands.Choice(name="Transcript channel", value="transcript_channel"),
+        app_commands.Choice(name="Roster default role", value="roster_role"),
+        app_commands.Choice(name="KOS role", value="kos_role"),
+        app_commands.Choice(name="Radio ping role", value="radio_ping_role"),
+    ]
+)
+async def config_set(
+    interaction: discord.Interaction,
+    setting: app_commands.Choice[str],
+    channel: discord.TextChannel | None = None,
+    role: discord.Role | None = None,
 ) -> None:
-    if not is_leadership(interaction.user):
+    label, key, kind = CONFIG_SETTINGS[setting.value]
+    # leadership role is security-sensitive → admins only
+    if setting.value == "leadership_role":
+        if not interaction.user.guild_permissions.administrator:
+            await interaction.response.send_message(
+                "Only a server admin can set the leadership role.", ephemeral=True
+            )
+            return
+    elif not is_leadership(interaction.user):
         await interaction.response.send_message(
-            "Only leadership can set the log channel.", ephemeral=True
+            "Only leadership can change settings.", ephemeral=True
         )
         return
+
     store = guild_store(DATA, interaction.guild_id)
-    store["log_channel_id"] = channel.id
+    if kind == "channel":
+        if role is not None and channel is None:
+            await interaction.response.send_message(
+                f"**{label}** takes a channel, not a role.", ephemeral=True
+            )
+            return
+        store[key] = channel.id if channel else None
+        val = channel.mention if channel else "`cleared`"
+    else:
+        if channel is not None and role is None:
+            await interaction.response.send_message(
+                f"**{label}** takes a role, not a channel.", ephemeral=True
+            )
+            return
+        store[key] = role.id if role else None
+        val = role.mention if role else "`cleared`"
     save_data(DATA)
     await interaction.response.send_message(
-        f"Roster, KOS and radio actions will now be logged to {channel.mention}. ✅",
-        ephemeral=True,
-    )
-    await send_log(
-        interaction.guild,
-        store,
-        f"Log channel set by {interaction.user.mention}.",
-        category="config",
-        actor=interaction.user,
+        f"⚙️  **{label}** → {val}", ephemeral=True
     )
 
 
-@log_channel_group.command(name="show", description="Show the current log channel")
-async def log_channel_show(interaction: discord.Interaction) -> None:
+@config_group.command(name="view", description="Show the current configuration")
+async def config_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    cid = store.get("log_channel_id")
-    if not cid:
-        await interaction.response.send_message(
-            "No log channel set. Use `/log_channel set`.", ephemeral=True
-        )
-        return
-    channel = interaction.guild.get_channel(cid)
-    where = channel.mention if channel else "a channel that no longer exists"
-    await interaction.response.send_message(f"Logging to {where}.", ephemeral=True)
+    g = interaction.guild
+
+    def ch(key: str) -> str:
+        cid = store.get(key)
+        c = g.get_channel(cid) if cid else None
+        return c.mention if c else "`— not set`"
+
+    def ro(key: str) -> str:
+        rid = store.get(key)
+        r = g.get_role(rid) if rid else None
+        return r.mention if r else "`— not set`"
+
+    embed = discord.Embed(title="⚙️  Server Configuration", color=EMBED_COLOR)
+    embed.add_field(name="👑 Leadership", value=ro("leadership_role_id"), inline=True)
+    embed.add_field(name="📝 Log channel", value=ch("log_channel_id"), inline=True)
+    embed.add_field(name="📨 EOI channel", value=ch("eoi_channel_id"), inline=True)
+    embed.add_field(
+        name="🧾 Transcripts", value=ch("transcript_channel_id"), inline=True
+    )
+    embed.add_field(name="📋 Roster role", value=ro("roster_role_id"), inline=True)
+    embed.add_field(name="💀 KOS role", value=ro("kos_role_id"), inline=True)
+    embed.add_field(
+        name="📻 Radio ping", value=ro("radio_ping_role_id"), inline=True
+    )
+    embed.add_field(
+        name="🎫 Ticket types",
+        value=str(len(store.get("ticket_types", []))),
+        inline=True,
+    )
+    embed.add_field(
+        name="🎖️ Ranks", value=str(len(store.get("ranks", []))), inline=True
+    )
+    embed.set_footer(text="Change anything with /config set")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@log_channel_group.command(name="off", description="Stop logging (leadership only)")
-async def log_channel_off(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can change the log channel.", ephemeral=True
-        )
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    store["log_channel_id"] = None
-    save_data(DATA)
-    await interaction.response.send_message("Logging turned off. ✅", ephemeral=True)
-
-
-@log_channel_group.command(
-    name="setup",
+@config_group.command(
+    name="log_setup",
     description="One-click: create a private log channel and start logging (leadership)",
 )
-async def log_channel_setup(interaction: discord.Interaction) -> None:
+async def config_log_setup(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
             "Only leadership can set up logging.", ephemeral=True
@@ -1133,12 +1148,11 @@ async def log_channel_setup(interaction: discord.Interaction) -> None:
     if not me.guild_permissions.manage_channels:
         await interaction.followup.send(
             "I need the **Manage Channels** permission to create a log channel. "
-            "Give me that, or use `/log_channel set #channel` with an existing one.",
+            "Give me that, or use `/config set` with an existing channel.",
             ephemeral=True,
         )
         return
 
-    # private by default: hidden from everyone, visible to the bot + leadership
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(view_channel=False),
         me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
@@ -1178,42 +1192,6 @@ async def log_channel_setup(interaction: discord.Interaction) -> None:
         f"Logging set up by {interaction.user.mention}.",
         category="config",
         actor=interaction.user,
-    )
-
-
-# ---- /eoi_channel ----------------------------------------------------------- #
-
-@eoi_channel_group.command(name="set", description="Set the channel EOIs are sent to")
-@app_commands.describe(channel="The channel applications will be posted in")
-async def eoi_channel_set(
-    interaction: discord.Interaction, channel: discord.TextChannel
-) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set the EOI channel.", ephemeral=True
-        )
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    store["eoi_channel_id"] = channel.id
-    save_data(DATA)
-    await interaction.response.send_message(
-        f"EOI applications will now be sent to {channel.mention}. ✅", ephemeral=True
-    )
-
-
-@eoi_channel_group.command(name="show", description="Show the current EOI channel")
-async def eoi_channel_show(interaction: discord.Interaction) -> None:
-    store = guild_store(DATA, interaction.guild_id)
-    cid = store.get("eoi_channel_id")
-    if cid is None:
-        await interaction.response.send_message(
-            "No EOI channel is set yet.", ephemeral=True
-        )
-        return
-    channel = interaction.guild.get_channel(cid)
-    where = channel.mention if channel else "a channel that no longer exists"
-    await interaction.response.send_message(
-        f"EOIs are sent to {where}.", ephemeral=True
     )
 
 
@@ -1363,8 +1341,8 @@ def _roll_frequency() -> str:
 
 def _radio_embed(freq: str, rolled_by: str | None = None) -> discord.Embed:
     embed = discord.Embed(
-        title="📻 Gang Radio",
-        description=f"**Frequency:** `{freq}`",
+        title="📻  Gang Radio",
+        description=f"**Frequency**\n# `{freq}`",
         color=EMBED_COLOR,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
@@ -1374,13 +1352,16 @@ def _radio_embed(freq: str, rolled_by: str | None = None) -> discord.Embed:
 
 
 def _radio_panel_embed(freq: str | None, rolled_by: str | None = None) -> discord.Embed:
-    embed = discord.Embed(title="📻 Gang Radio", color=EMBED_COLOR)
+    embed = discord.Embed(title="📻  Gang Radio", color=EMBED_COLOR)
     if freq:
         embed.description = (
-            f"**Current frequency:** `{freq}`\n\nPress **New Radio** to roll a fresh one."
+            f"**Current frequency**\n# `{freq}`\n\n"
+            "Press **📻 New Radio** to roll a fresh one."
         )
     else:
-        embed.description = "No frequency set yet. Press **New Radio** to roll one."
+        embed.description = (
+            "No frequency set yet.\nPress **📻 New Radio** below to roll one."
+        )
     if rolled_by:
         embed.set_footer(text=f"Last rolled by {rolled_by}")
     return embed
@@ -1486,26 +1467,6 @@ async def radio_view(interaction: discord.Interaction) -> None:
 
 
 @radio_group.command(
-    name="set_ping",
-    description="Set the role pinged when a new radio is rolled (leadership only)",
-)
-@app_commands.describe(role="The role to ping on a new radio")
-async def radio_set_ping(interaction: discord.Interaction, role: discord.Role) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set the radio ping role.", ephemeral=True
-        )
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    store["radio_ping_role_id"] = role.id
-    save_data(DATA)
-    await interaction.response.send_message(
-        f"{role.mention} will be pinged when a new radio is rolled. ✅",
-        ephemeral=True,
-    )
-
-
-@radio_group.command(
     name="panel",
     description="Post a radio panel with a New Radio button (leadership only)",
 )
@@ -1555,10 +1516,10 @@ async def eoi_post(
         return
 
     embed = discord.Embed(
-        title="📝 Expression of Interest — Recruitment Open",
+        title="📝  Recruitment is Open",
         description=message
-        or "Want to roll with us? Click **Apply** below and fill out the form. "
-        "Leadership will review and vote on every application.",
+        or "Want to roll with us? Tap **📨 Apply** below and fill out the form — "
+        "leadership reviews and votes on every application.",
         color=EMBED_COLOR,
     )
     await interaction.channel.send(embed=embed, view=EOIPromptView())
@@ -1583,114 +1544,69 @@ class EOIPromptView(discord.ui.View):
         await interaction.response.send_modal(EOIModal())
 
 
-# ---- /set_leadership -------------------------------------------------------- #
-
-@bot.tree.command(
-    name="set_leadership",
-    description="Set the leadership role for staff-only commands (admin only)",
-)
-@app_commands.describe(role="The role that counts as leadership/staff")
-async def set_leadership(
-    interaction: discord.Interaction, role: discord.Role
-) -> None:
-    if not interaction.user.guild_permissions.administrator:
-        await interaction.response.send_message(
-            "Only a server admin can set the leadership role.", ephemeral=True
-        )
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    store["leadership_role_id"] = role.id
-    save_data(DATA)
-    await interaction.response.send_message(
-        f"{role.mention} is now the leadership role. Only server admins and this "
-        "role can use staff commands, including rerolling the radio. ✅",
-        ephemeral=True,
-    )
-
-
 # ---- /gang_help ------------------------------------------------------------- #
 
 @bot.tree.command(name="gang_help", description="List every gang-bot command")
 async def gang_help(interaction: discord.Interaction) -> None:
-    embed = discord.Embed(title="🛠️ Gang Bot — Commands", color=EMBED_COLOR)
+    embed = discord.Embed(
+        title="🐉  Tenshi — Command Guide",
+        description="Everything the bot can do. Most setup lives under `/config`.",
+        color=EMBED_COLOR,
+    )
     embed.add_field(
-        name="Roster",
+        name="🎯  Roster",
         value=(
-            "`/roster view` — show the roster\n"
-            "`/roster add @members [rank]` — add up to 5 + give the rank's role\n"
-            "`/roster remove @member` — remove + take the role back\n"
-            "`/roster rank_set` — map a rank to a role (leadership)\n"
-            "`/roster rank_list` — show ranks\n"
-            "`/roster set_role` — default role (leadership)\n"
-            "`/roster reset` — wipe the list (leadership)"
+            "`/roster view` · `/roster add @members [rank]`\n"
+            "`/roster remove @member` · `/roster reset`\n"
+            "`/roster rank_set` · `rank_list` · `rank_remove`"
         ),
         inline=False,
     )
     embed.add_field(
-        name="KOS",
+        name="💀  KOS",
         value=(
-            "`/kos view` — show the KOS list\n"
-            "`/kos add @members [reason]` — KOS up to 5 + give the KOS role\n"
-            "`/kos remove @member` — remove + take the role back\n"
-            "`/kos set_role` — set the KOS role (leadership)\n"
-            "`/kos reset` — wipe it + strip the role (leadership)"
+            "`/kos view` · `/kos add @members [reason]`\n"
+            "`/kos remove @member` · `/kos reset`"
         ),
         inline=False,
     )
     embed.add_field(
-        name="EOI / Recruitment",
+        name="🎫  Tickets / Orders",
         value=(
-            "`/eoi` — open the application form\n"
-            "`/eoi_post` — post an Apply button (leadership)\n"
-            "`/eoi_channel set` — set the EOI channel (leadership)\n"
-            "`/eoi_channel show` — show the EOI channel"
+            "`/ticket type_add` — add a type + its category\n"
+            "`/ticket panel` — post the order menu\n"
+            "`/ticket board` — active orders by type\n"
+            "`/ticket close` — close current ticket\n"
+            "In a ticket: 💰 Mark Paid · 🔒 Close (saves transcript)"
         ),
         inline=False,
     )
     embed.add_field(
-        name="Role Menu",
-        value=(
-            "`/role_menu add` — add a self-serve role (leadership)\n"
-            "`/role_menu remove` — remove one (leadership)\n"
-            "`/role_menu list` — show the menu's roles\n"
-            "`/role_menu post` — post the dropdown here (leadership)"
-        ),
+        name="📨  Recruitment",
+        value="`/eoi` — apply · `/eoi_post` — post Apply button",
         inline=False,
     )
     embed.add_field(
-        name="Radio",
-        value=(
-            "`/radio panel` — post a button to roll new radios (leadership)\n"
-            "`/radio set_ping` — role to ping on a new radio (leadership)\n"
-            "`/radio new` — roll + post a new frequency (leadership)\n"
-            "`/radio view` — show the current frequency"
-        ),
+        name="📻  Radio",
+        value="`/radio new` · `/radio view` · `/radio panel`",
         inline=False,
     )
     embed.add_field(
-        name="Tickets / Orders",
-        value=(
-            "`/ticket type_add` — add a type + its category (leadership)\n"
-            "`/ticket type_list` — show ticket types\n"
-            "`/ticket panel` — post the ticket menu (leadership)\n"
-            "`/ticket transcript_set` — transcript channel (leadership)\n"
-            "`/ticket close` — close the ticket you're in (staff)\n"
-            "`/orders` — board of active orders by type (staff)\n"
-            "Ticket buttons: 💰 Mark Paid, 🔒 Close+transcript (staff)"
-        ),
+        name="🎭  Role Menu",
+        value="`/role_menu add` · `remove` · `list` · `post`",
         inline=False,
     )
     embed.add_field(
-        name="Logs",
+        name="⚙️  Setup",
         value=(
-            "`/log_channel setup` — one-click: make a log channel + start (leadership)\n"
-            "`/log_channel set` — use an existing channel (leadership)\n"
-            "`/log_channel show` — show the log channel\n"
-            "`/log_channel off` — stop logging (leadership)"
+            "`/config set` — channels & roles (log, EOI, transcript, "
+            "leadership, roster/KOS/radio roles)\n"
+            "`/config view` — see all settings\n"
+            "`/config log_setup` — one-click log channel"
         ),
         inline=False,
     )
-    embed.set_footer(text=f"Leadership role: {LEADERSHIP_ROLE_NAME}")
+    embed.set_footer(text="Staff commands need the leadership role or admin")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -2301,32 +2217,10 @@ async def ticket_close(interaction: discord.Interaction) -> None:
 
 
 @ticket_group.command(
-    name="transcript_set",
-    description="Set the channel closed-ticket transcripts are sent to (leadership)",
-)
-@app_commands.describe(channel="Channel to receive transcripts of closed tickets")
-async def ticket_transcript_set(
-    interaction: discord.Interaction, channel: discord.TextChannel
-) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set the transcript channel.", ephemeral=True
-        )
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    store["transcript_channel_id"] = channel.id
-    save_data(DATA)
-    await interaction.response.send_message(
-        f"Closed-ticket transcripts will be sent to {channel.mention}. ✅",
-        ephemeral=True,
-    )
-
-
-@bot.tree.command(
-    name="orders",
+    name="board",
     description="Show the board of active orders, grouped by type (staff)",
 )
-async def orders_board(interaction: discord.Interaction) -> None:
+async def ticket_board(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
             "Only staff can view the orders board.", ephemeral=True
@@ -2342,10 +2236,9 @@ async def orders_board(interaction: discord.Interaction) -> None:
 
 bot.tree.add_command(roster_group)
 bot.tree.add_command(kos_group)
-bot.tree.add_command(eoi_channel_group)
+bot.tree.add_command(config_group)
 bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
-bot.tree.add_command(log_channel_group)
 bot.tree.add_command(ticket_group)
 
 
