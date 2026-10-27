@@ -413,10 +413,11 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
         max_length=100,
     )
     montage = discord.ui.TextInput(
-        label="Montage (YouTube link)",
-        placeholder="https://youtube.com/...",
+        label="Montage(s) — one YouTube link per line",
+        placeholder="https://youtube.com/...\nhttps://youtu.be/...",
+        style=discord.TextStyle.paragraph,
         required=False,
-        max_length=300,
+        max_length=600,
     )
     armoury = discord.ui.TextInput(
         label="Armoury",
@@ -461,8 +462,14 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
         )
         embed.add_field(name="👤 Discord", value=self.discord_name.value, inline=True)
         embed.add_field(name="🎮 Name", value=self.ign.value, inline=True)
-        montage_val = self.montage.value.strip() or "—"
-        embed.add_field(name="🎬 Montage", value=montage_val, inline=False)
+        montage_raw = self.montage.value.strip()
+        links = [ln.strip() for ln in montage_raw.splitlines() if ln.strip()]
+        if links:
+            montage_val = "\n".join(f"• {ln}" for ln in links)
+        else:
+            montage_val = "—"
+        label = f"🎬 Montage{'s' if len(links) > 1 else ''}"
+        embed.add_field(name=label, value=montage_val[:1024], inline=False)
         embed.add_field(
             name="🔫 Armoury",
             value=self.armoury.value.strip() or "—",
@@ -477,8 +484,8 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             name=str(interaction.user),
             icon_url=interaction.user.display_avatar.url,
         )
-        # Show the montage's YouTube thumbnail as a clickable preview image.
-        thumb = youtube_thumbnail(montage_val if montage_val != "—" else None)
+        # Preview the first montage's YouTube thumbnail as the embed image.
+        thumb = youtube_thumbnail(montage_raw or None)
         if thumb:
             embed.set_image(url=thumb)
         embed.set_footer(text="✅ 0   •   ❌ 0")
