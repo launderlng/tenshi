@@ -8,9 +8,10 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | Command | What it does | Who |
 |---|---|---|
 | `/roster view` | Show the current roster | Everyone |
-| `/roster add <name> [role]` | Add a member | Everyone |
-| `/roster remove <name>` | Remove a member | Everyone |
-| `/roster reset` | Wipe the whole roster | Leadership |
+| `/roster set_role <role>` | Choose the role given to roster members | Leadership |
+| `/roster add @member [rank]` | Add a member and give them the roster role | Everyone |
+| `/roster remove @member` | Remove a member and take the role back | Everyone |
+| `/roster reset` | Wipe the roster and strip the role from everyone | Leadership |
 | `/kos view` | Show the KOS list | Everyone |
 | `/kos add <name> [reason]` | Add a player/gang to KOS | Everyone |
 | `/kos remove <name>` | Remove a KOS entry | Everyone |
@@ -27,6 +28,9 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 2. Under **Bot**, no privileged intents are required (everything uses slash commands).
 3. Invite it with the `applications.commands` and `bot` scopes, and permission to
    send messages / embed links in the channels you care about.
+4. For the roster role feature, give the bot **Manage Roles**, and drag the bot's
+   own role **above** the roster role in Server Settings → Roles (Discord only lets
+   a bot manage roles beneath its highest one). Then run `/roster set_role`.
 
 ## Environment variables
 
