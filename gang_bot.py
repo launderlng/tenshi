@@ -27,9 +27,11 @@ Set the bot token in the DISCORD_TOKEN environment variable.
 """
 
 import os
+import io
 import re
 import json
 import random
+import asyncio
 import logging
 import datetime
 from typing import Any
@@ -110,11 +112,15 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "log_channel_id": None,
             "orders": [],
             "next_order_id": 1,
+            "ticket_types": [],
             "leadership_role_id": None,
+            "transcript_channel_id": None,
         },
     )
     # make sure older save files get any new keys
     g.setdefault("leadership_role_id", None)
+    g.setdefault("transcript_channel_id", None)
+    g.setdefault("ticket_types", [])
     g.setdefault("roster", [])
     g.setdefault("kos", [])
     g.setdefault("eoi_channel_id", None)
@@ -159,19 +165,43 @@ def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
-async def send_log(guild: "discord.Guild", store: dict[str, Any], text: str) -> None:
-    """Post an audit line to the configured log channel, if one is set."""
+LOG_CATEGORIES = {
+    # category -> (emoji, label, color)
+    "roster": ("📋", "Roster", 0x3B82F6),
+    "kos": ("💀", "KOS", 0xDC2626),
+    "radio": ("📻", "Radio", 0xA855F7),
+    "orders": ("🔫", "Gun Orders", 0xF59E0B),
+    "config": ("⚙️", "Config", 0x6B7280),
+    "activity": ("•", "Activity", EMBED_COLOR),
+}
+
+
+async def send_log(
+    guild: "discord.Guild",
+    store: dict[str, Any],
+    text: str,
+    *,
+    category: str = "activity",
+    actor: "discord.abc.User | None" = None,
+) -> None:
+    """Post a categorized audit entry to the configured log channel, if one is set."""
     cid = store.get("log_channel_id")
     if not cid:
         return
     channel = guild.get_channel(cid)
     if channel is None:
         return
+    emoji, label, color = LOG_CATEGORIES.get(category, LOG_CATEGORIES["activity"])
     embed = discord.Embed(
         description=text,
-        color=EMBED_COLOR,
+        color=color,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
+    embed.set_author(name=f"{emoji} {label}")
+    if actor is not None:
+        embed.set_footer(
+            text=f"by {actor}", icon_url=actor.display_avatar.url
+        )
     try:
         await channel.send(embed=embed)
     except discord.HTTPException:
@@ -759,7 +789,9 @@ async def roster_add(
         await send_log(
             interaction.guild,
             store,
-            f"📋 {interaction.user.mention} added {', '.join(added)} to the roster{as_rank}.",
+            f"{interaction.user.mention} added {', '.join(added)} to the roster{as_rank}.",
+            category="roster",
+            actor=interaction.user,
         )
 
 
@@ -795,7 +827,9 @@ async def roster_remove(
     await send_log(
         interaction.guild,
         store,
-        f"📋 {interaction.user.mention} removed {member.mention} from the roster.",
+        f"{interaction.user.mention} removed {member.mention} from the roster.",
+        category="roster",
+        actor=interaction.user,
     )
 
 
@@ -819,7 +853,9 @@ async def roster_reset(interaction: discord.Interaction) -> None:
     await send_log(
         interaction.guild,
         store,
-        f"📋 {interaction.user.mention} wiped the roster ({count} cleared).",
+        f"{interaction.user.mention} wiped the roster ({count} cleared).",
+        category="roster",
+        actor=interaction.user,
     )
 
 
@@ -943,7 +979,9 @@ async def kos_add(
         await send_log(
             interaction.guild,
             store,
-            f"💀 {interaction.user.mention} added {', '.join(added)} to the KOS list.",
+            f"{interaction.user.mention} added {', '.join(added)} to the KOS list.",
+            category="kos",
+            actor=interaction.user,
         )
 
 
@@ -979,7 +1017,9 @@ async def kos_remove(
     await send_log(
         interaction.guild,
         store,
-        f"💀 {interaction.user.mention} removed {member.mention} from the KOS list.",
+        f"{interaction.user.mention} removed {member.mention} from the KOS list.",
+        category="kos",
+        actor=interaction.user,
     )
 
 
@@ -1003,7 +1043,9 @@ async def kos_reset(interaction: discord.Interaction) -> None:
     await send_log(
         interaction.guild,
         store,
-        f"💀 {interaction.user.mention} wiped the KOS list ({count} cleared).",
+        f"{interaction.user.mention} wiped the KOS list ({count} cleared).",
+        category="kos",
+        actor=interaction.user,
     )
 
 
@@ -1034,7 +1076,11 @@ async def log_channel_set(
         ephemeral=True,
     )
     await send_log(
-        interaction.guild, store, f"📝 Log channel set by {interaction.user.mention}."
+        interaction.guild,
+        store,
+        f"Log channel set by {interaction.user.mention}.",
+        category="config",
+        actor=interaction.user,
     )
 
 
@@ -1122,7 +1168,11 @@ async def log_channel_setup(interaction: discord.Interaction) -> None:
         f"Created {channel.mention} and logging is on. ✅", ephemeral=True
     )
     await send_log(
-        guild, store, f"📝 Logging set up by {interaction.user.mention}."
+        guild,
+        store,
+        f"Logging set up by {interaction.user.mention}.",
+        category="config",
+        actor=interaction.user,
     )
 
 
@@ -1379,7 +1429,9 @@ class RadioPanelView(discord.ui.View):
         await send_log(
             interaction.guild,
             store,
-            f"📻 {interaction.user.mention} rolled a new radio: `{freq}`.",
+            f"{interaction.user.mention} rolled a new radio: `{freq}`.",
+            category="radio",
+            actor=interaction.user,
         )
 
 
@@ -1409,7 +1461,9 @@ async def radio_new(interaction: discord.Interaction) -> None:
     await send_log(
         interaction.guild,
         store,
-        f"📻 {interaction.user.mention} rolled a new radio: `{freq}`.",
+        f"{interaction.user.mention} rolled a new radio: `{freq}`.",
+        category="radio",
+        actor=interaction.user,
     )
 
 
@@ -1609,11 +1663,14 @@ async def gang_help(interaction: discord.Interaction) -> None:
         inline=False,
     )
     embed.add_field(
-        name="Gun Orders",
+        name="Tickets / Orders",
         value=(
-            "`/order_panel` — post the Order Guns button (leadership)\n"
-            "`/orders` — board of active orders, paid & unpaid (staff)\n"
-            "Ticket buttons: 💰 Mark Paid, 🔒 Close (staff)"
+            "`/ticket type_add` — add a type + its category (leadership)\n"
+            "`/ticket type_list` — show ticket types\n"
+            "`/ticket panel` — post the ticket menu (leadership)\n"
+            "`/ticket transcript_set` — transcript channel (leadership)\n"
+            "`/orders` — board of active orders by type (staff)\n"
+            "Ticket buttons: 💰 Mark Paid, 🔒 Close+transcript (staff)"
         ),
         inline=False,
     )
@@ -1632,8 +1689,13 @@ async def gang_help(interaction: discord.Interaction) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Gun order ticket system
+# Ticket / order system (multiple types: gang orders, vendors, gun crafting…)
 # --------------------------------------------------------------------------- #
+
+def _slug(text: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    return s[:80] or "ticket"
+
 
 def _new_order_id(store: dict[str, Any]) -> int:
     oid = store.get("next_order_id", 1)
@@ -1648,6 +1710,13 @@ def _find_order_by_channel(store: dict[str, Any], channel_id: int) -> dict | Non
     return None
 
 
+def _find_ticket_type(store: dict[str, Any], name: str) -> dict | None:
+    for t in store.get("ticket_types", []):
+        if t["name"].lower() == name.lower():
+            return t
+    return None
+
+
 def _order_embed(order: dict[str, Any]) -> discord.Embed:
     paid = order.get("paid", False)
     closed = order.get("status", "open") == "closed"
@@ -1655,14 +1724,16 @@ def _order_embed(order: dict[str, Any]) -> discord.Embed:
     status = "✅ PAID" if paid else "❌ UNPAID"
     if closed:
         status += " • 🔒 Closed"
+    ttype = order.get("type") or "Order"
     embed = discord.Embed(
-        title=f"🔫 Gun Order #{order['id']}",
+        title=f"🎫 {ttype} #{order['id']}",
         color=color,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     embed.add_field(name="Customer", value=f"<@{order['user_id']}>", inline=True)
+    embed.add_field(name="Type", value=ttype, inline=True)
     embed.add_field(name="Status", value=status, inline=True)
-    embed.add_field(name="Guns", value=order.get("guns") or "—", inline=False)
+    embed.add_field(name="Items", value=order.get("guns") or "—", inline=False)
     embed.add_field(name="Quantity", value=order.get("quantity") or "—", inline=False)
     if order.get("notes"):
         embed.add_field(name="Notes", value=order["notes"], inline=False)
@@ -1671,48 +1742,87 @@ def _order_embed(order: dict[str, Any]) -> discord.Embed:
 
 def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
     active = [o for o in store["orders"] if o.get("status", "open") == "open"]
-    paid = [o for o in active if o.get("paid")]
-    unpaid = [o for o in active if not o.get("paid")]
 
     def fmt(o: dict[str, Any]) -> str:
-        guns = (o.get("guns") or "—").replace("\n", " ")
+        items = (o.get("guns") or "—").replace("\n", " ")
         qty = (o.get("quantity") or "—").replace("\n", " ")
-        line = f"**#{o['id']}** <@{o['user_id']}> — {guns} (x{qty})"
+        mark = "✅" if o.get("paid") else "❌"
+        line = f"{mark} **#{o['id']}** <@{o['user_id']}> — {items} (x{qty})"
         return line[:200]
 
-    def block(orders: list[dict[str, Any]]) -> str:
-        val = "\n".join(fmt(o) for o in orders) or "None"
-        return val if len(val) <= 1024 else val[:1010] + "\n…"
-
     embed = discord.Embed(
-        title="🔫 Gun Orders",
+        title="🎫 Active Orders",
         color=EMBED_COLOR,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
-    embed.add_field(name=f"❌ Unpaid ({len(unpaid)})", value=block(unpaid), inline=False)
-    embed.add_field(name=f"✅ Paid ({len(paid)})", value=block(paid), inline=False)
+    if not active:
+        embed.description = "No active orders."
+        return embed
+
+    # group by ticket type
+    types: dict[str, list[dict[str, Any]]] = {}
+    for o in active:
+        types.setdefault(o.get("type") or "Order", []).append(o)
+    for ttype, orders in types.items():
+        paid = sum(1 for o in orders if o.get("paid"))
+        val = "\n".join(fmt(o) for o in orders) or "None"
+        if len(val) > 1024:
+            val = val[:1010] + "\n…"
+        embed.add_field(
+            name=f"{ttype} — {paid}/{len(orders)} paid", value=val, inline=False
+        )
     return embed
 
 
-class OrderModal(discord.ui.Modal, title="Gun Order"):
-    guns = discord.ui.TextInput(
-        label="What guns do you want?",
-        placeholder="e.g. AK-47, Combat Pistol, SMG",
-        style=discord.TextStyle.paragraph,
-        max_length=500,
-    )
-    quantity = discord.ui.TextInput(
-        label="How many? (per gun)",
-        placeholder="e.g. AK x2, Pistol x5",
-        max_length=200,
-    )
-    notes = discord.ui.TextInput(
-        label="Notes (optional)",
-        placeholder="Delivery spot, timing, budget…",
-        style=discord.TextStyle.paragraph,
-        required=False,
-        max_length=500,
-    )
+async def _build_transcript(channel: discord.TextChannel) -> str:
+    lines: list[str] = []
+    try:
+        async for m in channel.history(limit=None, oldest_first=True):
+            ts = m.created_at.strftime("%Y-%m-%d %H:%M UTC")
+            content = m.content or ""
+            for e in m.embeds:
+                parts = []
+                if e.title:
+                    parts.append(e.title)
+                if e.description:
+                    parts.append(e.description)
+                for f in e.fields:
+                    parts.append(f"{f.name}: {f.value}")
+                if parts:
+                    content += (" " if content else "") + "[embed] " + " | ".join(parts)
+            for a in m.attachments:
+                content += f" [attachment: {a.filename} {a.url}]"
+            lines.append(f"[{ts}] {m.author}: {content}")
+    except discord.HTTPException:
+        lines.append("(couldn't read full history)")
+    return "\n".join(lines) if lines else "(no messages)"
+
+
+class OrderModal(discord.ui.Modal):
+    def __init__(self, ticket_type: str) -> None:
+        super().__init__(title=f"{ticket_type} Order"[:45])
+        self.ticket_type = ticket_type
+        self.guns = discord.ui.TextInput(
+            label="What do you want?",
+            placeholder="e.g. AK-47, Combat Pistol, parts…",
+            style=discord.TextStyle.paragraph,
+            max_length=500,
+        )
+        self.quantity = discord.ui.TextInput(
+            label="How many? (per item)",
+            placeholder="e.g. AK x2, Pistol x5",
+            max_length=200,
+        )
+        self.notes = discord.ui.TextInput(
+            label="Notes (optional)",
+            placeholder="Delivery spot, timing, budget…",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=500,
+        )
+        self.add_item(self.guns)
+        self.add_item(self.quantity)
+        self.add_item(self.notes)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
@@ -1726,6 +1836,7 @@ class OrderModal(discord.ui.Modal, title="Gun Order"):
             return
 
         store = guild_store(DATA, interaction.guild_id)
+        ttype = _find_ticket_type(store, self.ticket_type)
         oid = _new_order_id(store)
 
         overwrites = {
@@ -1740,14 +1851,20 @@ class OrderModal(discord.ui.Modal, title="Gun Order"):
             overwrites[lead] = discord.PermissionOverwrite(
                 view_channel=True, send_messages=True
             )
-        category = interaction.channel.category if interaction.channel else None
+
+        # place the ticket under the type's configured category, if any
+        category = None
+        if ttype and ttype.get("category_id"):
+            category = guild.get_channel(ttype["category_id"])
+        if category is None and interaction.channel is not None:
+            category = interaction.channel.category
 
         try:
             channel = await guild.create_text_channel(
-                f"order-{oid}",
+                f"{_slug(self.ticket_type)}-{oid}",
                 overwrites=overwrites,
                 category=category,
-                reason=f"Gun order by {interaction.user}",
+                reason=f"{self.ticket_type} order by {interaction.user}",
             )
         except discord.Forbidden:
             await interaction.response.send_message(
@@ -1764,6 +1881,7 @@ class OrderModal(discord.ui.Modal, title="Gun Order"):
 
         order = {
             "id": oid,
+            "type": self.ticket_type,
             "user_id": interaction.user.id,
             "guns": self.guns.value.strip(),
             "quantity": self.quantity.value.strip(),
@@ -1787,33 +1905,50 @@ class OrderModal(discord.ui.Modal, title="Gun Order"):
         save_data(DATA)
 
         await interaction.response.send_message(
-            f"Your order ticket is open: {channel.mention} ✅", ephemeral=True
+            f"Your {self.ticket_type} ticket is open: {channel.mention} ✅",
+            ephemeral=True,
         )
         await send_log(
-            guild, store, f"🔫 {interaction.user.mention} opened gun order #{oid}."
+            guild,
+            store,
+            f"{interaction.user.mention} opened a **{self.ticket_type}** ticket #{oid}.",
+            category="orders",
+            actor=interaction.user,
         )
 
 
-class OrderPanelView(discord.ui.View):
-    """Persistent 'Order Guns' button that opens the order modal for anyone."""
+class TicketPanelSelect(discord.ui.Select):
+    """Dropdown of configured ticket types; opens the order modal for the pick."""
 
-    def __init__(self) -> None:
+    def __init__(self, options: list[discord.SelectOption] | None = None) -> None:
+        opts = options or [discord.SelectOption(label="—", value="0")]
+        super().__init__(
+            custom_id="ticket:open",
+            placeholder="Open a ticket…",
+            min_values=1,
+            max_values=1,
+            options=opts,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        store = guild_store(DATA, interaction.guild_id)
+        chosen = self.values[0]
+        if _find_ticket_type(store, chosen) is None:
+            await interaction.response.send_message(
+                "That ticket type no longer exists.", ephemeral=True
+            )
+            return
+        await interaction.response.send_modal(OrderModal(chosen))
+
+
+class TicketPanelView(discord.ui.View):
+    def __init__(self, options: list[discord.SelectOption] | None = None) -> None:
         super().__init__(timeout=None)
-
-    @discord.ui.button(
-        label="Order Guns",
-        style=discord.ButtonStyle.primary,
-        emoji="🔫",
-        custom_id="order:new",
-    )
-    async def new_order(
-        self, interaction: discord.Interaction, button: discord.ui.Button
-    ) -> None:
-        await interaction.response.send_modal(OrderModal())
+        self.add_item(TicketPanelSelect(options))
 
 
 class OrderTicketView(discord.ui.View):
-    """Staff buttons on an order ticket: Mark Paid and Close."""
+    """Staff buttons on a ticket: Mark Paid and Close."""
 
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -1849,7 +1984,10 @@ class OrderTicketView(discord.ui.View):
         await send_log(
             interaction.guild,
             store,
-            f"💰 {interaction.user.mention} marked gun order #{order['id']} as PAID.",
+            f"{interaction.user.mention} marked "
+            f"**{order.get('type', 'order')}** #{order['id']} as PAID.",
+            category="orders",
+            actor=interaction.user,
         )
 
     @discord.ui.button(
@@ -1869,61 +2007,247 @@ class OrderTicketView(discord.ui.View):
         await interaction.response.defer()
         store = guild_store(DATA, interaction.guild_id)
         order = _find_order_by_channel(store, interaction.channel_id)
+        guild = interaction.guild
+        channel = interaction.channel
+
+        # 1) save a transcript to the transcript channel, if configured
+        tcid = store.get("transcript_channel_id")
+        tchannel = guild.get_channel(tcid) if tcid else None
+        if tchannel is not None:
+            transcript = await _build_transcript(channel)
+            fp = io.BytesIO(transcript.encode("utf-8"))
+            oid = order["id"] if order else channel.name
+            summary = discord.Embed(
+                title=f"🧾 Transcript — {(order.get('type') if order else 'Ticket')} #{oid}",
+                color=EMBED_COLOR,
+                timestamp=datetime.datetime.now(datetime.timezone.utc),
+            )
+            if order:
+                summary.add_field(
+                    name="Customer", value=f"<@{order['user_id']}>", inline=True
+                )
+                summary.add_field(
+                    name="Paid", value="✅" if order.get("paid") else "❌", inline=True
+                )
+                summary.add_field(
+                    name="Items", value=order.get("guns") or "—", inline=False
+                )
+            summary.set_footer(text=f"Closed by {interaction.user}")
+            try:
+                await tchannel.send(
+                    embed=summary,
+                    file=discord.File(fp, filename=f"ticket-{oid}.txt"),
+                )
+            except discord.HTTPException:
+                pass
+
+        # 2) mark closed + log
         if order is not None:
             order["status"] = "closed"
             save_data(DATA)
-            # lock the ticket: remove the customer's access, keep the record
-            customer = interaction.guild.get_member(order["user_id"])
-            try:
-                if customer is not None:
-                    await interaction.channel.set_permissions(
-                        customer, view_channel=False
-                    )
-                await interaction.channel.edit(name=f"closed-order-{order['id']}")
-            except discord.HTTPException:
-                pass
-            await interaction.message.edit(embed=_order_embed(order), view=None)
             await send_log(
-                interaction.guild,
+                guild,
                 store,
-                f"🔒 {interaction.user.mention} closed gun order #{order['id']}.",
+                f"{interaction.user.mention} closed "
+                f"**{order.get('type', 'order')}** #{order['id']}.",
+                category="orders",
+                actor=interaction.user,
             )
+
+        # 3) tell the channel, then delete it
+        try:
+            await channel.send("🔒 Ticket closed — deleting in 5 seconds…")
+        except discord.HTTPException:
+            pass
         await interaction.followup.send(
-            "Order closed and the ticket is locked. 🔒", ephemeral=True
+            "Closing — transcript saved, channel will delete shortly. 🔒",
+            ephemeral=True,
         )
+        await asyncio.sleep(5)
+        try:
+            await channel.delete(reason=f"Ticket closed by {interaction.user}")
+        except discord.HTTPException:
+            pass
 
 
-ORDER_PANEL_VIEW = OrderPanelView()
+TICKET_PANEL_VIEW = TicketPanelView()
 ORDER_TICKET_VIEW = OrderTicketView()
 
-
-@bot.tree.command(
-    name="order_panel",
-    description="Post the Order Guns button in this channel (leadership only)",
+ticket_group = app_commands.Group(
+    name="ticket", description="Gun order / vendor / crafting ticket system"
 )
-@app_commands.describe(message="Optional text shown above the button")
-async def order_panel(
+
+
+async def ticket_type_autocomplete(
+    interaction: discord.Interaction, current: str
+) -> list[app_commands.Choice[str]]:
+    store = guild_store(DATA, interaction.guild_id)
+    cur = current.lower()
+    return [
+        app_commands.Choice(name=t["name"], value=t["name"])
+        for t in store.get("ticket_types", [])
+        if cur in t["name"].lower()
+    ][:25]
+
+
+@ticket_group.command(
+    name="type_add",
+    description="Add a ticket type and the category its tickets open under (leadership)",
+)
+@app_commands.describe(
+    name="Type name, e.g. 'Gang Orders', 'Vendors', 'Gun Crafting'",
+    category="Channel category the tickets of this type should open under",
+    emoji="Optional emoji shown in the dropdown",
+)
+async def ticket_type_add(
+    interaction: discord.Interaction,
+    name: str,
+    category: discord.CategoryChannel | None = None,
+    emoji: str | None = None,
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can add ticket types.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    types = store["ticket_types"]
+    name_clean = name.strip()
+    entry = {
+        "name": name_clean,
+        "category_id": category.id if category else None,
+        "emoji": (emoji.strip() if emoji else None),
+    }
+    for t in types:
+        if t["name"].lower() == name_clean.lower():
+            t.update(entry)
+            break
+    else:
+        if len(types) >= 25:
+            await interaction.response.send_message(
+                "You can have at most 25 ticket types.", ephemeral=True
+            )
+            return
+        types.append(entry)
+    save_data(DATA)
+    where = f" under {category.mention}" if category else ""
+    await interaction.response.send_message(
+        f"Ticket type **{name_clean}** saved{where}. Run `/ticket panel` to "
+        "(re)post the menu. ✅",
+        ephemeral=True,
+    )
+
+
+@ticket_group.command(
+    name="type_remove", description="Remove a ticket type (leadership only)"
+)
+@app_commands.describe(name="The ticket type to remove")
+@app_commands.autocomplete(name=ticket_type_autocomplete)
+async def ticket_type_remove(interaction: discord.Interaction, name: str) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can remove ticket types.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    before = len(store["ticket_types"])
+    store["ticket_types"] = [
+        t for t in store["ticket_types"] if t["name"].lower() != name.lower()
+    ]
+    if len(store["ticket_types"]) == before:
+        await interaction.response.send_message(
+            f"No ticket type called **{name}**.", ephemeral=True
+        )
+        return
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Removed ticket type **{name}**. Repost with `/ticket panel`. 🗑️",
+        ephemeral=True,
+    )
+
+
+@ticket_group.command(name="type_list", description="Show the configured ticket types")
+async def ticket_type_list(interaction: discord.Interaction) -> None:
+    store = guild_store(DATA, interaction.guild_id)
+    types = store["ticket_types"]
+    embed = discord.Embed(title="🎫 Ticket Types", color=EMBED_COLOR)
+    if not types:
+        embed.description = "No ticket types yet. Add some with `/ticket type_add`."
+    else:
+        lines = []
+        for t in types:
+            cat = f" → <#{t['category_id']}>" if t.get("category_id") else ""
+            emoji = f"{t['emoji']} " if t.get("emoji") else ""
+            lines.append(f"{emoji}**{t['name']}**{cat}")
+        embed.description = "\n".join(lines)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@ticket_group.command(
+    name="panel",
+    description="Post the ticket menu (one dropdown with all types) (leadership)",
+)
+@app_commands.describe(message="Optional text shown above the menu")
+async def ticket_panel(
     interaction: discord.Interaction, message: str | None = None
 ) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
-            "Only leadership can post the order panel.", ephemeral=True
+            "Only leadership can post the ticket panel.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    options: list[discord.SelectOption] = []
+    for t in store["ticket_types"]:
+        options.append(
+            discord.SelectOption(
+                label=t["name"][:100],
+                value=t["name"],
+                emoji=t.get("emoji") or None,
+            )
+        )
+    if not options:
+        await interaction.response.send_message(
+            "Add at least one ticket type first with `/ticket type_add`.",
+            ephemeral=True,
         )
         return
     embed = discord.Embed(
-        title="🔫 Gun Orders — Open a Ticket",
+        title="🎫 Open a Ticket",
         description=message
-        or "Need hardware? Click **Order Guns** below, tell us what you want and "
-        "how many, and a private ticket opens for you and staff.",
+        or "Pick what you need from the menu below. A private ticket opens for "
+        "you and staff — tell us what you want and how many.",
         color=EMBED_COLOR,
     )
-    await interaction.channel.send(embed=embed, view=OrderPanelView())
-    await interaction.response.send_message("Order panel posted. ✅", ephemeral=True)
+    await interaction.channel.send(embed=embed, view=TicketPanelView(options))
+    await interaction.response.send_message("Ticket panel posted. ✅", ephemeral=True)
+
+
+@ticket_group.command(
+    name="transcript_set",
+    description="Set the channel closed-ticket transcripts are sent to (leadership)",
+)
+@app_commands.describe(channel="Channel to receive transcripts of closed tickets")
+async def ticket_transcript_set(
+    interaction: discord.Interaction, channel: discord.TextChannel
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set the transcript channel.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["transcript_channel_id"] = channel.id
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"Closed-ticket transcripts will be sent to {channel.mention}. ✅",
+        ephemeral=True,
+    )
 
 
 @bot.tree.command(
     name="orders",
-    description="Show the board of active gun orders (paid and unpaid)",
+    description="Show the board of active orders, grouped by type (staff)",
 )
 async def orders_board(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -1945,6 +2269,7 @@ bot.tree.add_command(eoi_channel_group)
 bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
 bot.tree.add_command(log_channel_group)
+bot.tree.add_command(ticket_group)
 
 
 @bot.event
@@ -1971,7 +2296,7 @@ async def on_ready() -> None:
     bot.add_view(EOIPromptView())
     bot.add_view(SELF_ROLE_VIEW)
     bot.add_view(RADIO_PANEL_VIEW)
-    bot.add_view(ORDER_PANEL_VIEW)
+    bot.add_view(TICKET_PANEL_VIEW)
     bot.add_view(ORDER_TICKET_VIEW)
     try:
         synced = await bot.tree.sync()

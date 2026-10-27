@@ -32,9 +32,13 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | `/radio set_ping <role>` | Set the role pinged when a new radio is rolled | Leadership |
 | `/radio new` | Roll a new random radio frequency and post it in this channel | Leadership |
 | `/radio view` | Show the current radio frequency | Everyone |
-| `/order_panel [message]` | Post an **Order Guns** button that opens a private order ticket | Leadership |
-| `/orders` | Board of active gun orders, split into paid and unpaid | Staff |
-| (ticket) 💰 Mark Paid / 🔒 Close | Buttons in each order ticket for staff | Staff |
+| `/ticket type_add <name> [category] [emoji]` | Add a ticket type (e.g. Gang Orders, Vendors, Gun Crafting) and the channel category its tickets open under | Leadership |
+| `/ticket type_remove <name>` | Remove a ticket type | Leadership |
+| `/ticket type_list` | Show configured ticket types | Everyone |
+| `/ticket panel [message]` | Post a dropdown menu of ticket types; picking one opens a private ticket | Leadership |
+| `/ticket transcript_set <channel>` | Where closed-ticket transcripts are sent | Leadership |
+| `/orders` | Board of active orders grouped by type, showing paid/unpaid | Staff |
+| (ticket) 💰 Mark Paid / 🔒 Close | Mark paid, or close → saves a transcript then deletes the channel | Staff |
 | `/log_channel setup` | One command: create a private `#gang-logs` channel and start logging | Leadership |
 | `/log_channel set <channel>` | Log roster/KOS/radio actions to an existing channel | Leadership |
 | `/log_channel show` | Show the log channel | Everyone |
