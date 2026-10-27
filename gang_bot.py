@@ -1749,7 +1749,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
             "`/ticket type_add` — add a type + its category\n"
             "`/ticket panel` — post the order menu\n"
             "`/ticket board` — active orders by type\n"
-            "`/ticket close` — close current ticket\n"
+            "`/close` — close the ticket you're in\n"
             "In a ticket: 💰 Mark Paid · 🔒 Close (saves transcript)"
         ),
         inline=False,
@@ -1818,46 +1818,28 @@ def _order_embed(order: dict[str, Any]) -> discord.Embed:
     closed = order.get("status", "open") == "closed"
     color = 0x22C55E if paid else EMBED_COLOR
     ttype = order.get("type") or "Order"
-    if closed:
-        status = "🔒 `CLOSED`"
-    elif paid:
-        status = "🟢 `PAID`"
-    else:
-        status = "🔴 `UNPAID`"
+    status = "🔒 Closed" if closed else ("🟢 Paid" if paid else "🔴 Unpaid")
+
+    claimed = order.get("claimed_by")
+    created = order.get("created_ts")
+    lines = [
+        f"**Customer**  <@{order['user_id']}>",
+        f"**Status**  {status}",
+        f"**Handled by**  {f'<@{claimed}>' if claimed else '*unclaimed*'}",
+    ]
+    if created:
+        lines.append(f"**Opened**  <t:{created}:R>")
 
     embed = discord.Embed(
-        title=f"🎫  {ttype} · Order #{order['id']}",
+        title=f"{ttype}  ·  Order #{order['id']}",
+        description="\n".join(lines),
         color=color,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
-    embed.add_field(name="👤 Customer", value=f"<@{order['user_id']}>", inline=True)
-    embed.add_field(name="🏷️ Type", value=f"`{ttype}`", inline=True)
-    embed.add_field(name="💵 Status", value=status, inline=True)
-    claimed = order.get("claimed_by")
-    embed.add_field(
-        name="🙋 Handled by",
-        value=f"<@{claimed}>" if claimed else "`unclaimed`",
-        inline=True,
-    )
-    created = order.get("created_ts")
-    embed.add_field(
-        name="🕐 Opened",
-        value=f"<t:{created}:R>" if created else "`—`",
-        inline=True,
-    )
-    embed.add_field(name="​", value="​", inline=True)
-    embed.add_field(
-        name="🔫 Items", value=f">>> {order.get('guns') or '—'}", inline=False
-    )
-    embed.add_field(
-        name="🔢 Quantity", value=f"`{order.get('quantity') or '—'}`", inline=False
-    )
+    embed.add_field(name="Items", value=order.get("guns") or "—", inline=False)
+    embed.add_field(name="Quantity", value=order.get("quantity") or "—", inline=True)
     if order.get("notes"):
-        embed.add_field(name="📝 Notes", value=f"> {order['notes']}", inline=False)
-    embed.set_footer(
-        text=("Paid — ready to fulfil" if paid else "Awaiting payment")
-        + f"  ·  Order #{order['id']}"
-    )
+        embed.add_field(name="Notes", value=order["notes"], inline=False)
     return embed
 
 
@@ -2478,6 +2460,28 @@ async def ticket_board(interaction: discord.Interaction) -> None:
         return
     store = guild_store(DATA, interaction.guild_id)
     await interaction.response.send_message(embed=_orders_board_embed(store))
+
+
+@bot.tree.command(
+    name="close", description="Close the ticket you're in (staff)"
+)
+async def close_ticket_cmd(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only staff can close tickets.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    order = _find_order_by_channel(store, interaction.channel_id)
+    if order is None:
+        await interaction.response.send_message(
+            "This isn't a ticket channel.", ephemeral=True
+        )
+        return
+    await interaction.response.send_message(
+        "Closing — transcript saved, channel will delete shortly. 🔒", ephemeral=True
+    )
+    await _close_ticket(interaction, store, order)
 
 
 # --------------------------------------------------------------------------- #
