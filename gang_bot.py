@@ -608,7 +608,7 @@ async def roster_remove(
 
 @roster_group.command(
     name="reset",
-    description="Wipe the roster and take the role off everyone (leadership only)",
+    description="Wipe the roster list (keeps everyone's role) (leadership only)",
 )
 async def roster_reset(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -616,47 +616,13 @@ async def roster_reset(interaction: discord.Interaction) -> None:
             "Only leadership can reset the roster.", ephemeral=True
         )
         return
-
     store = guild_store(DATA, interaction.guild_id)
-    entries = list(store["roster"])
-    count = len(entries)
-
-    # Stripping the role off many members can take longer than Discord's 3s
-    # window, so acknowledge first and follow up when done.
-    await interaction.response.defer()
-
-    role = _roster_role(interaction.guild, store)
-    stripped = 0
-    failed = 0
-    if role is not None:
-        for e in entries:
-            mid = e.get("id")
-            if not mid:
-                continue
-            member = interaction.guild.get_member(mid)
-            if member is None:
-                try:
-                    member = await interaction.guild.fetch_member(mid)
-                except (discord.NotFound, discord.HTTPException):
-                    continue
-            if role in member.roles:
-                try:
-                    await member.remove_roles(
-                        role, reason=f"Roster reset by {interaction.user}"
-                    )
-                    stripped += 1
-                except (discord.Forbidden, discord.HTTPException):
-                    failed += 1
-
+    count = len(store["roster"])
     store["roster"] = []
     save_data(DATA)
-
-    msg = f"Roster wiped — {count} members cleared. 🧹"
-    if role is not None:
-        msg += f" Took the {role.mention} role off {stripped}."
-        if failed:
-            msg += f" ({failed} I couldn't update — check my role position.)"
-    await interaction.followup.send(msg)
+    await interaction.response.send_message(
+        f"Roster wiped — {count} members cleared. Roles left untouched. 🧹"
+    )
 
 
 # ---- /kos ------------------------------------------------------------------- #
@@ -809,7 +775,7 @@ async def kos_remove(
 
 @kos_group.command(
     name="reset",
-    description="Wipe the KOS list and take the role off everyone (leadership only)",
+    description="Wipe the KOS list (keeps everyone's role) (leadership only)",
 )
 async def kos_reset(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -817,45 +783,13 @@ async def kos_reset(interaction: discord.Interaction) -> None:
             "Only leadership can reset the KOS list.", ephemeral=True
         )
         return
-
     store = guild_store(DATA, interaction.guild_id)
-    entries = list(store["kos"])
-    count = len(entries)
-
-    await interaction.response.defer()
-
-    role = _kos_role(interaction.guild, store)
-    stripped = 0
-    failed = 0
-    if role is not None:
-        for e in entries:
-            mid = e.get("id")
-            if not mid:
-                continue
-            member = interaction.guild.get_member(mid)
-            if member is None:
-                try:
-                    member = await interaction.guild.fetch_member(mid)
-                except (discord.NotFound, discord.HTTPException):
-                    continue
-            if role in member.roles:
-                try:
-                    await member.remove_roles(
-                        role, reason=f"KOS reset by {interaction.user}"
-                    )
-                    stripped += 1
-                except (discord.Forbidden, discord.HTTPException):
-                    failed += 1
-
+    count = len(store["kos"])
     store["kos"] = []
     save_data(DATA)
-
-    msg = f"KOS list wiped — {count} entries cleared. 🧹"
-    if role is not None:
-        msg += f" Took the {role.mention} role off {stripped}."
-        if failed:
-            msg += f" ({failed} I couldn't update — check my role position.)"
-    await interaction.followup.send(msg)
+    await interaction.response.send_message(
+        f"KOS list wiped — {count} entries cleared. Roles left untouched. 🧹"
+    )
 
 
 # ---- /eoi_channel ----------------------------------------------------------- #
