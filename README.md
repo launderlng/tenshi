@@ -32,6 +32,9 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | `/radio set_ping <role>` | Set the role pinged when a new radio is rolled | Leadership |
 | `/radio new` | Roll a new random radio frequency and post it in this channel | Leadership |
 | `/radio view` | Show the current radio frequency | Everyone |
+| `/order_panel [message]` | Post an **Order Guns** button that opens a private order ticket | Leadership |
+| `/orders` | Board of active gun orders, split into paid and unpaid | Staff |
+| (ticket) 💰 Mark Paid / 🔒 Close | Buttons in each order ticket for staff | Staff |
 | `/log_channel setup` | One command: create a private `#gang-logs` channel and start logging | Leadership |
 | `/log_channel set <channel>` | Log roster/KOS/radio actions to an existing channel | Leadership |
 | `/log_channel show` | Show the log channel | Everyone |
