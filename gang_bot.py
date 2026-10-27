@@ -29,6 +29,7 @@ Set the bot token in the DISCORD_TOKEN environment variable.
 import os
 import re
 import json
+import random
 import logging
 import datetime
 from typing import Any
@@ -103,6 +104,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "roster_role_id": None,
             "kos_role_id": None,
             "self_roles": [],
+            "radio_freq": None,
         },
     )
     # make sure older save files get any new keys
@@ -112,6 +114,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("roster_role_id", None)
     g.setdefault("kos_role_id", None)
     g.setdefault("self_roles", [])
+    g.setdefault("radio_freq", None)
     return g
 
 
@@ -182,9 +185,22 @@ class EOIView(discord.ui.View):
     async def _handle_vote(
         self, interaction: discord.Interaction, choice: str
     ) -> None:
+        log.info(
+            "Vote received: choice=%s user=%s msg=%s",
+            choice,
+            interaction.user,
+            getattr(interaction.message, "id", None),
+        )
+        # Defer first (silent ack) so we can never miss Discord's 3s window,
+        # then do the slower edit/followup afterwards.
+        try:
+            await interaction.response.defer()
+        except discord.InteractionResponded:
+            pass
+
         msg = interaction.message
         if msg is None:
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "Could not read this message.", ephemeral=True
             )
             return
@@ -192,15 +208,11 @@ class EOIView(discord.ui.View):
         record = self.votes.setdefault(msg.id, {})
         previous = record.get(interaction.user.id)
         record[interaction.user.id] = choice
-
         yes, no = self._tally(msg.id)
 
-        # Acknowledge the interaction AND update the embed in a single call.
-        # This responds within Discord's 3-second window. The old version edited
-        # the message first and only then replied, which could miss the deadline
-        # and surface as "Tenshi didn't respond in time".
         embed = msg.embeds[0] if msg.embeds else discord.Embed()
         embed.set_footer(text=f"✅ {yes}   •   ❌ {no}")
+        await msg.edit(embed=embed, view=self)
 
         if previous == choice:
             note = f"Your **{choice.upper()}** vote is already counted."
@@ -208,13 +220,28 @@ class EOIView(discord.ui.View):
             note = f"Changed your vote to **{choice.upper()}**."
         else:
             note = f"Counted your **{choice.upper()}** vote."
-
-        try:
-            await interaction.response.edit_message(embed=embed, view=self)
-        except discord.InteractionResponded:
-            # Already acknowledged somehow; fall back to editing the message.
-            await msg.edit(embed=embed, view=self)
         await interaction.followup.send(note, ephemeral=True)
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        log.exception(
+            "EOIView error on %s: %s", getattr(item, "custom_id", "?"), error
+        )
+        text = (
+            "⚠️ Couldn't record that vote — I may be missing permission to edit "
+            "the message or post here."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(text, ephemeral=True)
+            else:
+                await interaction.response.send_message(text, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
     @discord.ui.button(
         label="Yes",
@@ -423,6 +450,9 @@ eoi_channel_group = app_commands.Group(
 )
 role_menu_group = app_commands.Group(
     name="role_menu", description="Self-serve role selection menu"
+)
+radio_group = app_commands.Group(
+    name="radio", description="Random gang radio frequency"
 )
 
 
@@ -965,6 +995,60 @@ async def role_menu_post(
     await interaction.response.send_message("Role menu posted. ✅", ephemeral=True)
 
 
+# ---- /radio ----------------------------------------------------------------- #
+
+def _roll_frequency() -> str:
+    """A random radio frequency like '472.3'."""
+    return f"{random.randint(1, 999)}.{random.randint(0, 9)}"
+
+
+def _radio_embed(freq: str, rolled_by: str | None = None) -> discord.Embed:
+    embed = discord.Embed(
+        title="📻 Gang Radio",
+        description=f"**Frequency:** `{freq}`",
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    if rolled_by:
+        embed.set_footer(text=f"Rolled by {rolled_by}")
+    return embed
+
+
+@radio_group.command(
+    name="new",
+    description="Roll a new random radio frequency and post it here (leadership only)",
+)
+async def radio_new(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can roll a new radio.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    freq = _roll_frequency()
+    store["radio_freq"] = freq
+    save_data(DATA)
+    await interaction.channel.send(
+        embed=_radio_embed(freq, rolled_by=str(interaction.user))
+    )
+    await interaction.response.send_message(
+        f"New radio rolled: `{freq}` 📻", ephemeral=True
+    )
+
+
+@radio_group.command(name="view", description="Show the current radio frequency")
+async def radio_view(interaction: discord.Interaction) -> None:
+    store = guild_store(DATA, interaction.guild_id)
+    freq = store.get("radio_freq")
+    if not freq:
+        await interaction.response.send_message(
+            "No radio set yet — leadership can roll one with `/radio new`.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(embed=_radio_embed(freq))
+
+
 # ---- /eoi (open the form) --------------------------------------------------- #
 
 @bot.tree.command(name="eoi", description="Apply to the gang — fill out an EOI form")
@@ -1073,6 +1157,14 @@ async def gang_help(interaction: discord.Interaction) -> None:
         ),
         inline=False,
     )
+    embed.add_field(
+        name="Radio",
+        value=(
+            "`/radio new` — roll + post a new frequency (leadership)\n"
+            "`/radio view` — show the current frequency"
+        ),
+        inline=False,
+    )
     embed.set_footer(text=f"Leadership role: {LEADERSHIP_ROLE_NAME}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -1085,6 +1177,7 @@ bot.tree.add_command(roster_group)
 bot.tree.add_command(kos_group)
 bot.tree.add_command(eoi_channel_group)
 bot.tree.add_command(role_menu_group)
+bot.tree.add_command(radio_group)
 
 
 @bot.event
