@@ -37,6 +37,7 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | `/ticket type_list` | Show configured ticket types | Everyone |
 | `/ticket panel [message]` | Post a dropdown menu of ticket types; picking one opens a private ticket | Leadership |
 | `/ticket transcript_set <channel>` | Where closed-ticket transcripts are sent | Leadership |
+| `/ticket close` | Close the ticket you're in (saves transcript, deletes channel) | Staff |
 | `/orders` | Board of active orders grouped by type, showing paid/unpaid | Staff |
 | (ticket) 💰 Mark Paid / 🔒 Close | Mark paid, or close → saves a transcript then deletes the channel | Staff |
 | `/log_channel setup` | One command: create a private `#gang-logs` channel and start logging | Leadership |

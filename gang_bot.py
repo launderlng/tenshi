@@ -1674,6 +1674,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
             "`/ticket type_list` — show ticket types\n"
             "`/ticket panel` — post the ticket menu (leadership)\n"
             "`/ticket transcript_set` — transcript channel (leadership)\n"
+            "`/ticket close` — close the ticket you're in (staff)\n"
             "`/orders` — board of active orders by type (staff)\n"
             "Ticket buttons: 💰 Mark Paid, 🔒 Close+transcript (staff)"
         ),
@@ -1725,46 +1726,66 @@ def _find_ticket_type(store: dict[str, Any], name: str) -> dict | None:
 def _order_embed(order: dict[str, Any]) -> discord.Embed:
     paid = order.get("paid", False)
     closed = order.get("status", "open") == "closed"
-    color = 0x16A34A if paid else EMBED_COLOR
-    status = "✅ PAID" if paid else "❌ UNPAID"
-    if closed:
-        status += " • 🔒 Closed"
+    color = 0x22C55E if paid else EMBED_COLOR
     ttype = order.get("type") or "Order"
+    if closed:
+        status = "🔒 `CLOSED`"
+    elif paid:
+        status = "🟢 `PAID`"
+    else:
+        status = "🔴 `UNPAID`"
+
     embed = discord.Embed(
-        title=f"🎫 {ttype} #{order['id']}",
+        title=f"🎫  {ttype} · Order #{order['id']}",
         color=color,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
-    embed.add_field(name="Customer", value=f"<@{order['user_id']}>", inline=True)
-    embed.add_field(name="Type", value=ttype, inline=True)
-    embed.add_field(name="Status", value=status, inline=True)
-    embed.add_field(name="Items", value=order.get("guns") or "—", inline=False)
-    embed.add_field(name="Quantity", value=order.get("quantity") or "—", inline=False)
+    embed.add_field(name="👤 Customer", value=f"<@{order['user_id']}>", inline=True)
+    embed.add_field(name="🏷️ Type", value=f"`{ttype}`", inline=True)
+    embed.add_field(name="💵 Status", value=status, inline=True)
+    embed.add_field(
+        name="🔫 Items", value=f">>> {order.get('guns') or '—'}", inline=False
+    )
+    embed.add_field(
+        name="🔢 Quantity", value=f"`{order.get('quantity') or '—'}`", inline=False
+    )
     if order.get("notes"):
-        embed.add_field(name="Notes", value=order["notes"], inline=False)
+        embed.add_field(name="📝 Notes", value=f"> {order['notes']}", inline=False)
+    embed.set_footer(
+        text=("Paid — ready to fulfil" if paid else "Awaiting payment")
+        + f"  ·  Order #{order['id']}"
+    )
     return embed
 
 
 def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
     active = [o for o in store["orders"] if o.get("status", "open") == "open"]
+    emoji_by_type = {
+        t["name"]: (t.get("emoji") or "🎫") for t in store.get("ticket_types", [])
+    }
 
     def fmt(o: dict[str, Any]) -> str:
         items = (o.get("guns") or "—").replace("\n", " ")
         qty = (o.get("quantity") or "—").replace("\n", " ")
-        mark = "✅" if o.get("paid") else "❌"
-        line = f"{mark} **#{o['id']}** <@{o['user_id']}> — {items} (x{qty})"
+        mark = "🟢" if o.get("paid") else "🔴"
+        line = f"{mark} `#{o['id']}` <@{o['user_id']}> — {items} ×{qty}"
         return line[:200]
 
     embed = discord.Embed(
-        title="🎫 Active Orders",
+        title="🎫  Active Orders",
         color=EMBED_COLOR,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     if not active:
-        embed.description = "No active orders."
+        embed.description = "✨ No active orders right now."
         return embed
 
-    # group by ticket type
+    total_paid = sum(1 for o in active if o.get("paid"))
+    embed.description = (
+        f"**{len(active)}** open · 🟢 **{total_paid}** paid · "
+        f"🔴 **{len(active) - total_paid}** unpaid"
+    )
+
     types: dict[str, list[dict[str, Any]]] = {}
     for o in active:
         types.setdefault(o.get("type") or "Order", []).append(o)
@@ -1773,10 +1794,80 @@ def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
         val = "\n".join(fmt(o) for o in orders) or "None"
         if len(val) > 1024:
             val = val[:1010] + "\n…"
+        em = emoji_by_type.get(ttype, "🎫")
         embed.add_field(
-            name=f"{ttype} — {paid}/{len(orders)} paid", value=val, inline=False
+            name=f"{em}  {ttype}  ·  {paid}/{len(orders)} paid",
+            value=val,
+            inline=False,
         )
+    embed.set_footer(text="💰 Mark Paid · 🔒 Close — in each ticket")
     return embed
+
+
+async def _close_ticket(
+    interaction: discord.Interaction, store: dict[str, Any], order: dict | None
+) -> None:
+    """Save a transcript (if a channel is set), log it, then delete the channel."""
+    guild = interaction.guild
+    channel = interaction.channel
+
+    tcid = store.get("transcript_channel_id")
+    tchannel = guild.get_channel(tcid) if tcid else None
+    if tchannel is not None:
+        transcript = await _build_transcript(channel)
+        fp = io.BytesIO(transcript.encode("utf-8"))
+        oid = order["id"] if order else channel.name
+        summary = discord.Embed(
+            title=f"🧾  Transcript · {(order.get('type') if order else 'Ticket')} #{oid}",
+            color=EMBED_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        if order:
+            summary.add_field(
+                name="👤 Customer", value=f"<@{order['user_id']}>", inline=True
+            )
+            summary.add_field(
+                name="💵 Paid",
+                value="🟢 Yes" if order.get("paid") else "🔴 No",
+                inline=True,
+            )
+            summary.add_field(
+                name="🔫 Items", value=order.get("guns") or "—", inline=False
+            )
+        summary.set_footer(text=f"Closed by {interaction.user}")
+        try:
+            await tchannel.send(
+                embed=summary, file=discord.File(fp, filename=f"ticket-{oid}.txt")
+            )
+        except discord.HTTPException:
+            pass
+
+    if order is not None:
+        order["status"] = "closed"
+        save_data(DATA)
+        await send_log(
+            guild,
+            store,
+            f"{interaction.user.mention} closed "
+            f"**{order.get('type', 'order')}** #{order['id']}.",
+            category="orders",
+            actor=interaction.user,
+        )
+
+    closing = discord.Embed(
+        description="🔒 **Ticket closed.** Saving transcript and deleting this "
+        "channel in 5 seconds…",
+        color=EMBED_COLOR,
+    )
+    try:
+        await channel.send(embed=closing)
+    except discord.HTTPException:
+        pass
+    await asyncio.sleep(5)
+    try:
+        await channel.delete(reason=f"Ticket closed by {interaction.user}")
+    except discord.HTTPException:
+        pass
 
 
 async def _build_transcript(channel: discord.TextChannel) -> str:
@@ -2012,67 +2103,11 @@ class OrderTicketView(discord.ui.View):
         await interaction.response.defer()
         store = guild_store(DATA, interaction.guild_id)
         order = _find_order_by_channel(store, interaction.channel_id)
-        guild = interaction.guild
-        channel = interaction.channel
-
-        # 1) save a transcript to the transcript channel, if configured
-        tcid = store.get("transcript_channel_id")
-        tchannel = guild.get_channel(tcid) if tcid else None
-        if tchannel is not None:
-            transcript = await _build_transcript(channel)
-            fp = io.BytesIO(transcript.encode("utf-8"))
-            oid = order["id"] if order else channel.name
-            summary = discord.Embed(
-                title=f"🧾 Transcript — {(order.get('type') if order else 'Ticket')} #{oid}",
-                color=EMBED_COLOR,
-                timestamp=datetime.datetime.now(datetime.timezone.utc),
-            )
-            if order:
-                summary.add_field(
-                    name="Customer", value=f"<@{order['user_id']}>", inline=True
-                )
-                summary.add_field(
-                    name="Paid", value="✅" if order.get("paid") else "❌", inline=True
-                )
-                summary.add_field(
-                    name="Items", value=order.get("guns") or "—", inline=False
-                )
-            summary.set_footer(text=f"Closed by {interaction.user}")
-            try:
-                await tchannel.send(
-                    embed=summary,
-                    file=discord.File(fp, filename=f"ticket-{oid}.txt"),
-                )
-            except discord.HTTPException:
-                pass
-
-        # 2) mark closed + log
-        if order is not None:
-            order["status"] = "closed"
-            save_data(DATA)
-            await send_log(
-                guild,
-                store,
-                f"{interaction.user.mention} closed "
-                f"**{order.get('type', 'order')}** #{order['id']}.",
-                category="orders",
-                actor=interaction.user,
-            )
-
-        # 3) tell the channel, then delete it
-        try:
-            await channel.send("🔒 Ticket closed — deleting in 5 seconds…")
-        except discord.HTTPException:
-            pass
         await interaction.followup.send(
             "Closing — transcript saved, channel will delete shortly. 🔒",
             ephemeral=True,
         )
-        await asyncio.sleep(5)
-        try:
-            await channel.delete(reason=f"Ticket closed by {interaction.user}")
-        except discord.HTTPException:
-            pass
+        await _close_ticket(interaction, store, order)
 
 
 TICKET_PANEL_VIEW = TicketPanelView()
@@ -2203,7 +2238,9 @@ async def ticket_panel(
         return
     store = guild_store(DATA, interaction.guild_id)
     options: list[discord.SelectOption] = []
+    menu_lines: list[str] = []
     for t in store["ticket_types"]:
+        em = t.get("emoji") or "🎫"
         options.append(
             discord.SelectOption(
                 label=t["name"][:100],
@@ -2211,6 +2248,7 @@ async def ticket_panel(
                 emoji=t.get("emoji") or None,
             )
         )
+        menu_lines.append(f"{em}  **{t['name']}**")
     if not options:
         await interaction.response.send_message(
             "Add at least one ticket type first with `/ticket type_add`.",
@@ -2218,14 +2256,48 @@ async def ticket_panel(
         )
         return
     embed = discord.Embed(
-        title="🎫 Open a Ticket",
+        title="🎫  Open a Ticket",
         description=message
-        or "Pick what you need from the menu below. A private ticket opens for "
-        "you and staff — tell us what you want and how many.",
+        or "Need hardware or a job done? Pick an option from the menu below and a "
+        "**private ticket** opens just for you and staff.",
         color=EMBED_COLOR,
     )
+    embed.add_field(name="What we handle", value="\n".join(menu_lines), inline=False)
+    embed.add_field(
+        name="How it works",
+        value=(
+            "1️⃣  Pick a category below\n"
+            "2️⃣  Tell us what you want & how many\n"
+            "3️⃣  A private channel opens — staff take it from there"
+        ),
+        inline=False,
+    )
+    embed.set_footer(text="Tickets are private · one click to open")
     await interaction.channel.send(embed=embed, view=TicketPanelView(options))
     await interaction.response.send_message("Ticket panel posted. ✅", ephemeral=True)
+
+
+@ticket_group.command(
+    name="close",
+    description="Close the ticket you're in — saves a transcript, then deletes it",
+)
+async def ticket_close(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only staff can close tickets.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    order = _find_order_by_channel(store, interaction.channel_id)
+    if order is None:
+        await interaction.response.send_message(
+            "This isn't a ticket channel.", ephemeral=True
+        )
+        return
+    await interaction.response.send_message(
+        "Closing — transcript saved, channel will delete shortly. 🔒", ephemeral=True
+    )
+    await _close_ticket(interaction, store, order)
 
 
 @ticket_group.command(
