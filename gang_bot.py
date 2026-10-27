@@ -108,6 +108,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "radio_ping_role_id": None,
             "ranks": [],
             "log_channel_id": None,
+            "orders": [],
+            "next_order_id": 1,
         },
     )
     # make sure older save files get any new keys
@@ -121,6 +123,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("radio_ping_role_id", None)
     g.setdefault("ranks", [])
     g.setdefault("log_channel_id", None)
+    g.setdefault("orders", [])
+    g.setdefault("next_order_id", 1)
     return g
 
 
@@ -1570,6 +1574,15 @@ async def gang_help(interaction: discord.Interaction) -> None:
         inline=False,
     )
     embed.add_field(
+        name="Gun Orders",
+        value=(
+            "`/order_panel` — post the Order Guns button (leadership)\n"
+            "`/orders` — board of active orders, paid & unpaid (staff)\n"
+            "Ticket buttons: 💰 Mark Paid, 🔒 Close (staff)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
         name="Logs",
         value=(
             "`/log_channel setup` — one-click: make a log channel + start (leadership)\n"
@@ -1581,6 +1594,310 @@ async def gang_help(interaction: discord.Interaction) -> None:
     )
     embed.set_footer(text=f"Leadership role: {LEADERSHIP_ROLE_NAME}")
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# --------------------------------------------------------------------------- #
+# Gun order ticket system
+# --------------------------------------------------------------------------- #
+
+def _new_order_id(store: dict[str, Any]) -> int:
+    oid = store.get("next_order_id", 1)
+    store["next_order_id"] = oid + 1
+    return oid
+
+
+def _find_order_by_channel(store: dict[str, Any], channel_id: int) -> dict | None:
+    for o in store["orders"]:
+        if o.get("channel_id") == channel_id:
+            return o
+    return None
+
+
+def _order_embed(order: dict[str, Any]) -> discord.Embed:
+    paid = order.get("paid", False)
+    closed = order.get("status", "open") == "closed"
+    color = 0x16A34A if paid else EMBED_COLOR
+    status = "✅ PAID" if paid else "❌ UNPAID"
+    if closed:
+        status += " • 🔒 Closed"
+    embed = discord.Embed(
+        title=f"🔫 Gun Order #{order['id']}",
+        color=color,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name="Customer", value=f"<@{order['user_id']}>", inline=True)
+    embed.add_field(name="Status", value=status, inline=True)
+    embed.add_field(name="Guns", value=order.get("guns") or "—", inline=False)
+    embed.add_field(name="Quantity", value=order.get("quantity") or "—", inline=False)
+    if order.get("notes"):
+        embed.add_field(name="Notes", value=order["notes"], inline=False)
+    return embed
+
+
+def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
+    active = [o for o in store["orders"] if o.get("status", "open") == "open"]
+    paid = [o for o in active if o.get("paid")]
+    unpaid = [o for o in active if not o.get("paid")]
+
+    def fmt(o: dict[str, Any]) -> str:
+        guns = (o.get("guns") or "—").replace("\n", " ")
+        qty = (o.get("quantity") or "—").replace("\n", " ")
+        line = f"**#{o['id']}** <@{o['user_id']}> — {guns} (x{qty})"
+        return line[:200]
+
+    def block(orders: list[dict[str, Any]]) -> str:
+        val = "\n".join(fmt(o) for o in orders) or "None"
+        return val if len(val) <= 1024 else val[:1010] + "\n…"
+
+    embed = discord.Embed(
+        title="🔫 Gun Orders",
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name=f"❌ Unpaid ({len(unpaid)})", value=block(unpaid), inline=False)
+    embed.add_field(name=f"✅ Paid ({len(paid)})", value=block(paid), inline=False)
+    return embed
+
+
+class OrderModal(discord.ui.Modal, title="Gun Order"):
+    guns = discord.ui.TextInput(
+        label="What guns do you want?",
+        placeholder="e.g. AK-47, Combat Pistol, SMG",
+        style=discord.TextStyle.paragraph,
+        max_length=500,
+    )
+    quantity = discord.ui.TextInput(
+        label="How many? (per gun)",
+        placeholder="e.g. AK x2, Pistol x5",
+        max_length=200,
+    )
+    notes = discord.ui.TextInput(
+        label="Notes (optional)",
+        placeholder="Delivery spot, timing, budget…",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        me = guild.me
+        if not me.guild_permissions.manage_channels:
+            await interaction.response.send_message(
+                "I can't open a ticket — I need the **Manage Channels** permission. "
+                "Tell staff.",
+                ephemeral=True,
+            )
+            return
+
+        store = guild_store(DATA, interaction.guild_id)
+        oid = _new_order_id(store)
+
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            interaction.user: discord.PermissionOverwrite(
+                view_channel=True, send_messages=True
+            ),
+            me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        }
+        lead = discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
+        if lead is not None:
+            overwrites[lead] = discord.PermissionOverwrite(
+                view_channel=True, send_messages=True
+            )
+        category = interaction.channel.category if interaction.channel else None
+
+        try:
+            channel = await guild.create_text_channel(
+                f"order-{oid}",
+                overwrites=overwrites,
+                category=category,
+                reason=f"Gun order by {interaction.user}",
+            )
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                "I couldn't open a ticket channel — check my **Manage Channels** "
+                "permission and role position.",
+                ephemeral=True,
+            )
+            return
+        except discord.HTTPException:
+            await interaction.response.send_message(
+                "Something went wrong opening the ticket.", ephemeral=True
+            )
+            return
+
+        order = {
+            "id": oid,
+            "user_id": interaction.user.id,
+            "guns": self.guns.value.strip(),
+            "quantity": self.quantity.value.strip(),
+            "notes": self.notes.value.strip(),
+            "paid": False,
+            "status": "open",
+            "channel_id": channel.id,
+            "created_at": now_stamp(),
+        }
+        store["orders"].append(order)
+        save_data(DATA)
+
+        ping = f"<@{interaction.user.id}>" + (f" {lead.mention}" if lead else "")
+        msg = await channel.send(
+            content=ping,
+            embed=_order_embed(order),
+            view=OrderTicketView(),
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        )
+        order["message_id"] = msg.id
+        save_data(DATA)
+
+        await interaction.response.send_message(
+            f"Your order ticket is open: {channel.mention} ✅", ephemeral=True
+        )
+        await send_log(
+            guild, store, f"🔫 {interaction.user.mention} opened gun order #{oid}."
+        )
+
+
+class OrderPanelView(discord.ui.View):
+    """Persistent 'Order Guns' button that opens the order modal for anyone."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Order Guns",
+        style=discord.ButtonStyle.primary,
+        emoji="🔫",
+        custom_id="order:new",
+    )
+    async def new_order(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        await interaction.response.send_modal(OrderModal())
+
+
+class OrderTicketView(discord.ui.View):
+    """Staff buttons on an order ticket: Mark Paid and Close."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Mark Paid",
+        style=discord.ButtonStyle.success,
+        emoji="💰",
+        custom_id="order:paid",
+    )
+    async def mark_paid(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can mark orders paid.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        store = guild_store(DATA, interaction.guild_id)
+        order = _find_order_by_channel(store, interaction.channel_id)
+        if order is None:
+            await interaction.followup.send(
+                "Couldn't find this order.", ephemeral=True
+            )
+            return
+        order["paid"] = True
+        save_data(DATA)
+        await interaction.message.edit(embed=_order_embed(order), view=self)
+        await interaction.followup.send(
+            f"Order #{order['id']} marked **paid**. 💰", ephemeral=True
+        )
+        await send_log(
+            interaction.guild,
+            store,
+            f"💰 {interaction.user.mention} marked gun order #{order['id']} as PAID.",
+        )
+
+    @discord.ui.button(
+        label="Close",
+        style=discord.ButtonStyle.danger,
+        emoji="🔒",
+        custom_id="order:close",
+    )
+    async def close_order(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can close orders.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        store = guild_store(DATA, interaction.guild_id)
+        order = _find_order_by_channel(store, interaction.channel_id)
+        if order is not None:
+            order["status"] = "closed"
+            save_data(DATA)
+            # lock the ticket: remove the customer's access, keep the record
+            customer = interaction.guild.get_member(order["user_id"])
+            try:
+                if customer is not None:
+                    await interaction.channel.set_permissions(
+                        customer, view_channel=False
+                    )
+                await interaction.channel.edit(name=f"closed-order-{order['id']}")
+            except discord.HTTPException:
+                pass
+            await interaction.message.edit(embed=_order_embed(order), view=None)
+            await send_log(
+                interaction.guild,
+                store,
+                f"🔒 {interaction.user.mention} closed gun order #{order['id']}.",
+            )
+        await interaction.followup.send(
+            "Order closed and the ticket is locked. 🔒", ephemeral=True
+        )
+
+
+ORDER_PANEL_VIEW = OrderPanelView()
+ORDER_TICKET_VIEW = OrderTicketView()
+
+
+@bot.tree.command(
+    name="order_panel",
+    description="Post the Order Guns button in this channel (leadership only)",
+)
+@app_commands.describe(message="Optional text shown above the button")
+async def order_panel(
+    interaction: discord.Interaction, message: str | None = None
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can post the order panel.", ephemeral=True
+        )
+        return
+    embed = discord.Embed(
+        title="🔫 Gun Orders — Open a Ticket",
+        description=message
+        or "Need hardware? Click **Order Guns** below, tell us what you want and "
+        "how many, and a private ticket opens for you and staff.",
+        color=EMBED_COLOR,
+    )
+    await interaction.channel.send(embed=embed, view=OrderPanelView())
+    await interaction.response.send_message("Order panel posted. ✅", ephemeral=True)
+
+
+@bot.tree.command(
+    name="orders",
+    description="Show the board of active gun orders (paid and unpaid)",
+)
+async def orders_board(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only staff can view the orders board.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    await interaction.response.send_message(embed=_orders_board_embed(store))
 
 
 # --------------------------------------------------------------------------- #
@@ -1619,6 +1936,8 @@ async def on_ready() -> None:
     bot.add_view(EOIPromptView())
     bot.add_view(SELF_ROLE_VIEW)
     bot.add_view(RADIO_PANEL_VIEW)
+    bot.add_view(ORDER_PANEL_VIEW)
+    bot.add_view(ORDER_TICKET_VIEW)
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))
