@@ -1292,8 +1292,8 @@ async def role_menu_post(
 # ---- /radio ----------------------------------------------------------------- #
 
 def _roll_frequency() -> str:
-    """A random radio frequency like '472.3'."""
-    return f"{random.randint(1, 999)}.{random.randint(0, 9)}"
+    """A random radio frequency in 00.00 format, e.g. '47.23'."""
+    return f"{random.randint(0, 99):02d}.{random.randint(0, 99):02d}"
 
 
 def _radio_embed(freq: str, rolled_by: str | None = None) -> discord.Embed:
