@@ -11,12 +11,12 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 | `/roster set_role <role>` | Choose the role given to roster members | Leadership |
 | `/roster add @member [+4 more] [rank]` | Add up to 5 members and give them the roster role | Everyone |
 | `/roster remove @member` | Remove a member and take the role back | Everyone |
-| `/roster reset` | Wipe the roster and strip the role from everyone | Leadership |
+| `/roster reset` | Wipe the roster list (keeps everyone's role) | Leadership |
 | `/kos view` | Show the KOS list | Everyone |
 | `/kos set_role <role>` | Choose the role given to people added to KOS | Leadership |
 | `/kos add @member [+4 more] [reason]` | Add up to 5 members to KOS and give them the KOS role | Everyone |
 | `/kos remove @member` | Remove a KOS entry and take the role back | Everyone |
-| `/kos reset` | Wipe the KOS list and strip the role from everyone | Leadership |
+| `/kos reset` | Wipe the KOS list (keeps everyone's role) | Leadership |
 | `/eoi` | Open the application form (Discord, Name, Montage/YouTube, Armoury, Vouches/Previous Gangs). Posts to the EOI channel with Yes/No voting buttons. | Everyone |
 | `/eoi_post [message]` | Post an "Apply" button in the current channel | Leadership |
 | `/eoi_channel set <channel>` | Choose where EOIs get sent | Leadership |
