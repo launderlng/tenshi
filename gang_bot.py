@@ -124,6 +124,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "member_log_channel_id": None,
             "orders": [],
             "next_order_id": 1,
+            "tickets_open": True,
             "ticket_types": [],
             "leadership_role_id": None,
             "transcript_channel_id": None,
@@ -152,6 +153,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("member_log_channel_id", None)
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
+    g.setdefault("tickets_open", True)
     return g
 
 
@@ -1749,6 +1751,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
             "`/ticket type_add` — add a type + its category\n"
             "`/ticket panel` — post the order menu\n"
             "`/ticket board` — active orders by type\n"
+            "`/ticket toggle` — open/close new orders\n"
             "`/close` — close the ticket you're in\n"
             "In a ticket: 💰 Mark Paid · 🔒 Close (saves transcript)"
         ),
@@ -2127,6 +2130,12 @@ class TicketPanelSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         store = guild_store(DATA, interaction.guild_id)
+        if not store.get("tickets_open", True):
+            await interaction.response.send_message(
+                "🔒 Ticket orders are currently **closed**. Check back later.",
+                ephemeral=True,
+            )
+            return
         chosen = self.values[0]
         if _find_ticket_type(store, chosen) is None:
             await interaction.response.send_message(
@@ -2426,26 +2435,28 @@ async def ticket_panel(
 
 
 @ticket_group.command(
-    name="close",
-    description="Close the ticket you're in — saves a transcript, then deletes it",
+    name="toggle",
+    description="Open or close new ticket orders for everyone (leadership)",
 )
-async def ticket_close(interaction: discord.Interaction) -> None:
+async def ticket_toggle(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
-            "Only staff can close tickets.", ephemeral=True
+            "Only leadership can open/close ticket orders.", ephemeral=True
         )
         return
     store = guild_store(DATA, interaction.guild_id)
-    order = _find_order_by_channel(store, interaction.channel_id)
-    if order is None:
-        await interaction.response.send_message(
-            "This isn't a ticket channel.", ephemeral=True
-        )
-        return
-    await interaction.response.send_message(
-        "Closing — transcript saved, channel will delete shortly. 🔒", ephemeral=True
+    now_open = not store.get("tickets_open", True)
+    store["tickets_open"] = now_open
+    save_data(DATA)
+    state = "🟢 **open** — people can order again" if now_open else "🔒 **closed** — no new orders"
+    await interaction.response.send_message(f"Ticket orders are now {state}.", ephemeral=True)
+    await send_log(
+        interaction.guild,
+        store,
+        f"🎫 Ticket orders turned **{'OPEN' if now_open else 'CLOSED'}**.",
+        category="tickets",
+        actor=interaction.user,
     )
-    await _close_ticket(interaction, store, order)
 
 
 @ticket_group.command(
