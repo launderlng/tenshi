@@ -1,0 +1,55 @@
+# FiveM Gang Management Bot
+
+A Discord bot to manage a FiveM roleplay gang: roster, Kill-On-Sight list, and an
+Expression-of-Interest (EOI) application system with Yes/No voting.
+
+## Commands
+
+| Command | What it does | Who |
+|---|---|---|
+| `/roster view` | Show the current roster | Everyone |
+| `/roster add <name> [role]` | Add a member | Everyone |
+| `/roster remove <name>` | Remove a member | Everyone |
+| `/roster reset` | Wipe the whole roster | Leadership |
+| `/kos view` | Show the KOS list | Everyone |
+| `/kos add <name> [reason]` | Add a player/gang to KOS | Everyone |
+| `/kos remove <name>` | Remove a KOS entry | Everyone |
+| `/kos reset` | Wipe the KOS list | Leadership |
+| `/eoi` | Open the application form (Discord, Name, Montage/YouTube, Armoury, Vouches/Previous Gangs). Posts to the EOI channel with Yes/No voting buttons. | Everyone |
+| `/eoi_post [message]` | Post an "Apply" button in the current channel | Leadership |
+| `/eoi_channel set <channel>` | Choose where EOIs get sent | Leadership |
+| `/eoi_channel show` | Show the current EOI channel | Everyone |
+| `/gang_help` | List all commands | Everyone |
+
+## Setup
+
+1. Create a bot at <https://discord.com/developers/applications>, copy its **token**.
+2. Under **Bot**, no privileged intents are required (everything uses slash commands).
+3. Invite it with the `applications.commands` and `bot` scopes, and permission to
+   send messages / embed links in the channels you care about.
+
+## Environment variables
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `DISCORD_TOKEN` | yes | — | Your bot token |
+| `LEADERSHIP_ROLE` | no | `Leadership` | Name of the role allowed to run leadership actions |
+| `DATA_FILE` | no | `gang_data.json` | Where data is saved |
+
+## Run locally
+
+```bash
+pip install -r requirements.txt
+export DISCORD_TOKEN="your-token-here"
+python gang_bot.py
+```
+
+## Run on Railway
+
+Same as your other bot: push this repo, add `DISCORD_TOKEN` (and optionally
+`LEADERSHIP_ROLE`) as service variables, and set the start command to
+`python gang_bot.py`.
+
+> **Data persistence note:** Railway's filesystem resets on redeploy. To keep the
+> roster/KOS between deploys, attach a Volume and point `DATA_FILE` at it, e.g.
+> `DATA_FILE=/data/gang_data.json`.
