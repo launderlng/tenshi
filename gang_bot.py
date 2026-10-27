@@ -125,6 +125,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "orders": [],
             "next_order_id": 1,
             "tickets_open": True,
+            "ticket_category_id": None,
             "ticket_types": [],
             "leadership_role_id": None,
             "transcript_channel_id": None,
@@ -154,6 +155,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
     g.setdefault("tickets_open", True)
+    g.setdefault("ticket_category_id", None)
     return g
 
 
@@ -1725,7 +1727,7 @@ class EOIPromptView(discord.ui.View):
 async def gang_help(interaction: discord.Interaction) -> None:
     embed = discord.Embed(
         title="🐉  Tenshi — Command Guide",
-        description="Everything the bot can do. Most setup lives under `/config`.",
+        description="New here? Run **`/setup`** first. Most settings live under `/config`.",
         color=EMBED_COLOR,
     )
     embed.add_field(
@@ -1749,6 +1751,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="🎫  Tickets / Orders",
         value=(
             "`/ticket type_add` — add a type + its category\n"
+            "`/ticket set_category` — where tickets open\n"
             "`/ticket panel` — post the order menu\n"
             "`/ticket board` — active orders by type\n"
             "`/ticket toggle` — open/close new orders\n"
@@ -1775,6 +1778,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="⚙️  Setup",
         value=(
+            "`/setup` — guided one-command setup ⭐\n"
             "`/config set` — channels & roles (logs, EOI, transcript, "
             "leadership, roster/KOS/radio roles)\n"
             "`/config view` — see all settings\n"
@@ -2041,10 +2045,13 @@ class OrderModal(discord.ui.Modal):
                 view_channel=True, send_messages=True
             )
 
-        # place the ticket under the type's configured category, if any
+        # place the ticket under: the type's own category → the default ticket
+        # category → the panel channel's category
         category = None
         if ttype and ttype.get("category_id"):
             category = guild.get_channel(ttype["category_id"])
+        if category is None and store.get("ticket_category_id"):
+            category = guild.get_channel(store["ticket_category_id"])
         if category is None and interaction.channel is not None:
             category = interaction.channel.category
 
@@ -2421,6 +2428,37 @@ async def ticket_type_list(interaction: discord.Interaction) -> None:
 
 
 @ticket_group.command(
+    name="set_category",
+    description="Choose the category new tickets open under (leadership)",
+)
+@app_commands.describe(
+    category="Channel category tickets open under (leave empty to clear)"
+)
+async def ticket_set_category(
+    interaction: discord.Interaction,
+    category: discord.CategoryChannel | None = None,
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set the ticket category.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["ticket_category_id"] = category.id if category else None
+    save_data(DATA)
+    where = (
+        category.mention
+        if category
+        else "`cleared` — tickets open under the panel channel's category"
+    )
+    await interaction.response.send_message(
+        f"New tickets will now open under {where}. ✅\n"
+        "(A ticket **type** with its own category still overrides this.)",
+        ephemeral=True,
+    )
+
+
+@ticket_group.command(
     name="panel",
     description="Post the ticket menu (one dropdown with all types) (leadership)",
 )
@@ -2533,6 +2571,108 @@ async def close_ticket_cmd(interaction: discord.Interaction) -> None:
         "Closing — transcript saved, channel will delete shortly. 🔒", ephemeral=True
     )
     await _close_ticket(interaction, store, order)
+
+
+@bot.tree.command(
+    name="setup",
+    description="Guided setup — creates log/ticket channels and shows what's left (leadership)",
+)
+async def setup_cmd(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can run setup.", ephemeral=True
+        )
+        return
+    await interaction.response.defer(ephemeral=True)
+    guild = interaction.guild
+    me = guild.me
+    store = guild_store(DATA, interaction.guild_id)
+
+    lead = None
+    if store.get("leadership_role_id"):
+        lead = guild.get_role(store["leadership_role_id"])
+    if lead is None:
+        lead = discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
+
+    created: list[str] = []
+    if me.guild_permissions.manage_channels:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        }
+        if lead is not None:
+            overwrites[lead] = discord.PermissionOverwrite(view_channel=True)
+
+        # only create the log channels that aren't already set
+        log_defs = [
+            ("gang-logs", "log_channel_id"),
+            ("roster-logs", "roster_log_channel_id"),
+            ("kos-logs", "kos_log_channel_id"),
+            ("radio-logs", "radio_log_channel_id"),
+            ("recruitment-logs", "eoi_log_channel_id"),
+            ("role-logs", "member_log_channel_id"),
+            ("ticket-logs", "ticket_log_channel_id"),
+            ("order-logs", "order_log_channel_id"),
+        ]
+        needed = [(n, k) for n, k in log_defs if not store.get(k)]
+        if needed:
+            try:
+                log_cat = await guild.create_category(
+                    "📁 Logs", overwrites=overwrites, reason="Gang setup"
+                )
+                for name, key in needed:
+                    ch = await guild.create_text_channel(
+                        name, category=log_cat, overwrites=overwrites, reason="Gang setup"
+                    )
+                    store[key] = ch.id
+                created.append(f"{len(needed)} log channels")
+            except discord.HTTPException:
+                pass
+
+        # a default Tickets category, if none set yet
+        if not store.get("ticket_category_id"):
+            try:
+                tcat = await guild.create_category("🎫 Tickets", reason="Gang setup")
+                store["ticket_category_id"] = tcat.id
+                created.append("Tickets category")
+            except discord.HTTPException:
+                pass
+
+    save_data(DATA)
+
+    def mark(ok: Any) -> str:
+        return "✅" if ok else "⬜"
+
+    checklist = [
+        f"{mark(store.get('leadership_role_id') or lead)} **Leadership role** — "
+        "`/config set leadership_role`",
+        f"{mark(store.get('log_channel_id'))} **Log channels** — created / `/config log_setup`",
+        f"{mark(store.get('ticket_category_id'))} **Tickets category** — "
+        "`/ticket set_category`",
+        f"{mark(store.get('ticket_types'))} **Ticket types** — `/ticket type_add` "
+        "→ `/ticket panel`",
+        f"{mark(store.get('transcript_channel_id'))} **Transcript channel** — "
+        "`/config set transcript_channel`",
+        f"{mark(store.get('eoi_channel_id'))} **EOI channel** — `/config set eoi_channel` "
+        "→ `/eoi_post`",
+        f"{mark(store.get('roster_role_id'))} **Roster default role** — "
+        "`/config set roster_role`",
+    ]
+    embed = discord.Embed(
+        title="🛠️  Gang Bot Setup",
+        description="\n".join(checklist),
+        color=EMBED_COLOR,
+    )
+    if created:
+        embed.add_field(name="✨ Just created", value=", ".join(created), inline=False)
+    if not me.guild_permissions.manage_channels:
+        embed.add_field(
+            name="⚠️ Heads up",
+            value="Give me **Manage Channels** so I can create the channels for you.",
+            inline=False,
+        )
+    embed.set_footer(text="⬜ = still to do · check anytime with /config view")
+    await interaction.followup.send(embed=embed, ephemeral=True)
 
 
 # --------------------------------------------------------------------------- #
