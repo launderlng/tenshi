@@ -105,6 +105,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "kos_role_id": None,
             "self_roles": [],
             "radio_freq": None,
+            "radio_ping_role_id": None,
         },
     )
     # make sure older save files get any new keys
@@ -115,6 +116,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("kos_role_id", None)
     g.setdefault("self_roles", [])
     g.setdefault("radio_freq", None)
+    g.setdefault("radio_ping_role_id", None)
     return g
 
 
@@ -1014,6 +1016,69 @@ def _radio_embed(freq: str, rolled_by: str | None = None) -> discord.Embed:
     return embed
 
 
+def _radio_panel_embed(freq: str | None, rolled_by: str | None = None) -> discord.Embed:
+    embed = discord.Embed(title="📻 Gang Radio", color=EMBED_COLOR)
+    if freq:
+        embed.description = (
+            f"**Current frequency:** `{freq}`\n\nPress **New Radio** to roll a fresh one."
+        )
+    else:
+        embed.description = "No frequency set yet. Press **New Radio** to roll one."
+    if rolled_by:
+        embed.set_footer(text=f"Last rolled by {rolled_by}")
+    return embed
+
+
+class RadioPanelView(discord.ui.View):
+    """Persistent panel: a button that rolls a new frequency and pings a role."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="New Radio",
+        style=discord.ButtonStyle.primary,
+        emoji="📻",
+        custom_id="radio:new",
+    )
+    async def new_radio(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can roll a new radio.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+
+        store = guild_store(DATA, interaction.guild_id)
+        freq = _roll_frequency()
+        store["radio_freq"] = freq
+        save_data(DATA)
+
+        # refresh the panel to show the new frequency
+        try:
+            await interaction.message.edit(
+                embed=_radio_panel_embed(freq, str(interaction.user)), view=self
+            )
+        except discord.HTTPException:
+            pass
+
+        # ping the configured role with the new frequency
+        rid = store.get("radio_ping_role_id")
+        role = interaction.guild.get_role(rid) if rid else None
+        if role is not None:
+            await interaction.channel.send(
+                f"{role.mention} 📻 New radio frequency: `{freq}`",
+                allowed_mentions=discord.AllowedMentions(roles=True),
+            )
+
+        await interaction.followup.send(f"Rolled `{freq}`. 📻", ephemeral=True)
+
+
+RADIO_PANEL_VIEW = RadioPanelView()
+
+
 @radio_group.command(
     name="new",
     description="Roll a new random radio frequency and post it here (leadership only)",
@@ -1047,6 +1112,43 @@ async def radio_view(interaction: discord.Interaction) -> None:
         )
         return
     await interaction.response.send_message(embed=_radio_embed(freq))
+
+
+@radio_group.command(
+    name="set_ping",
+    description="Set the role pinged when a new radio is rolled (leadership only)",
+)
+@app_commands.describe(role="The role to ping on a new radio")
+async def radio_set_ping(interaction: discord.Interaction, role: discord.Role) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can set the radio ping role.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["radio_ping_role_id"] = role.id
+    save_data(DATA)
+    await interaction.response.send_message(
+        f"{role.mention} will be pinged when a new radio is rolled. ✅",
+        ephemeral=True,
+    )
+
+
+@radio_group.command(
+    name="panel",
+    description="Post a radio panel with a New Radio button (leadership only)",
+)
+async def radio_panel(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can post the radio panel.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    await interaction.channel.send(
+        embed=_radio_panel_embed(store.get("radio_freq")), view=RadioPanelView()
+    )
+    await interaction.response.send_message("Radio panel posted. 📻", ephemeral=True)
 
 
 # ---- /eoi (open the form) --------------------------------------------------- #
@@ -1160,6 +1262,8 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="Radio",
         value=(
+            "`/radio panel` — post a button to roll new radios (leadership)\n"
+            "`/radio set_ping` — role to ping on a new radio (leadership)\n"
             "`/radio new` — roll + post a new frequency (leadership)\n"
             "`/radio view` — show the current frequency"
         ),
@@ -1186,6 +1290,7 @@ async def on_ready() -> None:
     bot.add_view(EOI_VIEW)
     bot.add_view(EOIPromptView())
     bot.add_view(SELF_ROLE_VIEW)
+    bot.add_view(RADIO_PANEL_VIEW)
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))
