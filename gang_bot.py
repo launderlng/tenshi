@@ -54,6 +54,11 @@ LEADERSHIP_ROLE_NAME = os.getenv("LEADERSHIP_ROLE", "Leadership")
 # volume path if you want it to survive redeploys (e.g. /data/gang_data.json).
 DATA_FILE = os.getenv("DATA_FILE", "gang_data.json")
 
+# Lock the bot to specific servers. Comma-separated guild IDs in ALLOWED_GUILD_IDS;
+# the bot leaves any server not on the list. Empty = no restriction.
+_allowed_raw = os.getenv("ALLOWED_GUILD_IDS", "").replace(" ", "")
+ALLOWED_GUILD_IDS = {int(x) for x in _allowed_raw.split(",") if x.isdigit()}
+
 EMBED_COLOR = 0xE11D48  # deep red, fits the "gang" vibe
 
 logging.basicConfig(
@@ -2304,6 +2309,31 @@ async def on_ready() -> None:
     except discord.DiscordException as exc:
         log.error("Command sync failed: %s", exc)
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
+    log.info(
+        "In %d guild(s): %s",
+        len(bot.guilds),
+        ", ".join(f"{g.name} ({g.id})" for g in bot.guilds) or "none",
+    )
+    # enforce the server allowlist on startup, if one is configured
+    if ALLOWED_GUILD_IDS:
+        for g in list(bot.guilds):
+            if g.id not in ALLOWED_GUILD_IDS:
+                log.warning("Leaving unauthorized guild %s (%s)", g.name, g.id)
+                try:
+                    await g.leave()
+                except discord.HTTPException:
+                    pass
+
+
+@bot.event
+async def on_guild_join(guild: discord.Guild) -> None:
+    # if an allowlist is set, immediately leave any server not on it
+    if ALLOWED_GUILD_IDS and guild.id not in ALLOWED_GUILD_IDS:
+        log.warning("Leaving unauthorized guild %s (%s)", guild.name, guild.id)
+        try:
+            await guild.leave()
+        except discord.HTTPException:
+            pass
 
 
 def main() -> None:
