@@ -632,50 +632,12 @@ radio_group = app_commands.Group(
 )
 
 
-def _format_list(title: str, entries: list[dict[str, Any]], empty: str) -> discord.Embed:
-    embed = discord.Embed(title=title, color=EMBED_COLOR)
-    if not entries:
-        embed.description = empty
-        return embed
-    lines = []
-    for i, e in enumerate(entries, start=1):
-        name = e.get("name", "Unknown")
-        note = e.get("note")
-        line = f"**{i}.** {name}"
-        if note:
-            line += f" — {note}"
-        lines.append(line)
-    embed.description = "\n".join(lines)
-    embed.set_footer(text=f"{len(entries)} total")
-    return embed
-
-
 # ---- /roster ---------------------------------------------------------------- #
 
 def _roster_role(guild: discord.Guild, store: dict[str, Any]) -> discord.Role | None:
     """The configured roster role for this guild, or None if unset/deleted."""
     rid = store.get("roster_role_id")
     return guild.get_role(rid) if rid else None
-
-
-def _roster_embed(entries: list[dict[str, Any]]) -> discord.Embed:
-    embed = discord.Embed(
-        title="🎯  Gang Roster",
-        color=EMBED_COLOR,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
-    if not entries:
-        embed.description = "*Empty.* Add members with `/roster add`."
-        return embed
-    lines = []
-    for i, e in enumerate(entries, start=1):
-        who = f"<@{e['id']}>" if e.get("id") else e.get("name", "Unknown")
-        tag = f"  ·  `{e['note']}`" if e.get("note") else ""
-        lines.append(f"`{i:>2}`  {who}{tag}")
-    embed.description = "\n".join(lines)
-    n = len(entries)
-    embed.set_footer(text=f"👥 {n} member{'s' if n != 1 else ''}")
-    return embed
 
 
 def _live_roster_embed(
@@ -765,18 +727,6 @@ class RosterRefreshView(discord.ui.View):
 
 
 ROSTER_REFRESH_VIEW = RosterRefreshView()
-
-
-def _dedupe_members(members: list[discord.Member | None]) -> list[discord.Member]:
-    """Drop None entries and duplicate members, preserving order."""
-    seen: set[int] = set()
-    out: list[discord.Member] = []
-    for m in members:
-        if m is None or m.id in seen:
-            continue
-        seen.add(m.id)
-        out.append(m)
-    return out
 
 
 _ID_RE = re.compile(r"(\d{17,20})")
@@ -3082,23 +3032,6 @@ bot.tree.add_command(kos_group)
 bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
 bot.tree.add_command(ticket_group)
-
-
-@bot.event
-async def on_interaction(interaction: discord.Interaction) -> None:
-    # Diagnostic: log every interaction the bot receives so we can see whether
-    # component (button) clicks are arriving and with what custom_id.
-    try:
-        data = interaction.data or {}
-        log.info(
-            "on_interaction: type=%s component_type=%s custom_id=%s user=%s",
-            getattr(interaction.type, "name", interaction.type),
-            data.get("component_type"),
-            data.get("custom_id"),
-            interaction.user,
-        )
-    except Exception:  # never let logging break interaction handling
-        log.exception("on_interaction logging failed")
 
 
 @bot.event
