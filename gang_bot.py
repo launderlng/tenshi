@@ -1170,7 +1170,7 @@ async def kos_reset(interaction: discord.Interaction) -> None:
 
 def _muster_embed(text: str, attendees: list[int]) -> discord.Embed:
     embed = discord.Embed(
-        title="🎯  KOS Call-out",
+        title="🎯  KOS Roster",
         description=text or "*No details given.*",
         color=EMBED_COLOR,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
@@ -1179,7 +1179,7 @@ def _muster_embed(text: str, attendees: list[int]) -> discord.Embed:
         lst = "\n".join(f"`{i:>2}` <@{uid}>" for i, uid in enumerate(attendees, 1))
     else:
         lst = "*Nobody yet — tap the button below.*"
-    embed.add_field(name=f"✅ Coming · {len(attendees)}", value=lst[:1024], inline=False)
+    embed.add_field(name=f"✅ On roster · {len(attendees)}", value=lst[:1024], inline=False)
     embed.set_footer(text="Tap ✅ to mark yourself in · tap again to drop out")
     return embed
 
