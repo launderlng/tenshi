@@ -24,6 +24,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | `/kos add @member [more] [reason]` | Add up to 30 to KOS (pick one + paste the rest) and give the KOS role | Everyone |
 | `/kos remove @member` | Remove and take the role back | Everyone |
 | `/kos reset` | Wipe the list (keeps roles) | Leadership |
+| `/kos draw <message> <emoji> <size>` | Build a squad from a message's reactions (leadership prioritised, randomised); posts a proposal to the staff channel to confirm / reshuffle / sub, then adds the squad to KOS | Leadership |
 
 ### Tickets / Orders
 | Command | What it does | Who |
