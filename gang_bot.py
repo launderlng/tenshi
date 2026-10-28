@@ -158,6 +158,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("join_log_channel_id", None)
     g.setdefault("welcome_channel_id", None)
     g.setdefault("staff_channel_id", None)
+    g.setdefault("kos_musters", {})
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
     g.setdefault("tickets_open", True)
@@ -1164,348 +1165,92 @@ async def kos_reset(interaction: discord.Interaction) -> None:
     )
 
 
-# ---- /kos draw (build a roster from a message's reactions) ------------------- #
-
-_MSG_LINK_RE = re.compile(r"/channels/\d+/(\d+)/(\d+)")
+# ---- /kos callout (embed + tick button for "I can make the KOS") ------------ #
 
 
-async def _fetch_target_message(
-    interaction: discord.Interaction, ref: str
-) -> discord.Message | None:
-    ref = ref.strip()
-    m = _MSG_LINK_RE.search(ref)
-    if m:
-        ch = interaction.guild.get_channel(int(m.group(1)))
-        if ch is None:
-            return None
-        try:
-            return await ch.fetch_message(int(m.group(2)))
-        except discord.HTTPException:
-            return None
-    if ref.isdigit() and interaction.channel is not None:
-        try:
-            return await interaction.channel.fetch_message(int(ref))
-        except discord.HTTPException:
-            return None
-    return None
+def _muster_embed(text: str, attendees: list[int]) -> discord.Embed:
+    embed = discord.Embed(
+        title="🎯  KOS Call-out",
+        description=text or "*No details given.*",
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    if attendees:
+        lst = "\n".join(f"`{i:>2}` <@{uid}>" for i, uid in enumerate(attendees, 1))
+    else:
+        lst = "*Nobody yet — tap the button below.*"
+    embed.add_field(name=f"✅ Coming · {len(attendees)}", value=lst[:1024], inline=False)
+    embed.set_footer(text="Tap ✅ to mark yourself in · tap again to drop out")
+    return embed
 
 
-async def _reactors_for_emoji(
-    message: discord.Message, emoji: str, guild: discord.Guild
-) -> list[discord.Member] | None:
-    want = emoji.strip()
-    want_name = want.strip(":")
-    target = None
-    for r in message.reactions:
-        e = r.emoji
-        if str(e) == want or getattr(e, "name", None) == want_name:
-            target = r
-            break
-    if target is None:
-        return None
-    members: list[discord.Member] = []
-    async for user in target.users():
-        if user.bot:
-            continue
-        mem = guild.get_member(user.id)
-        if mem is None:
-            try:
-                mem = await guild.fetch_member(user.id)
-            except (discord.NotFound, discord.HTTPException):
-                mem = None
-        if mem is not None:
-            members.append(mem)
-    return members
+class MusterView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
 
-
-def _draw_roster(pool: list[int], leaders: set[int], size: int) -> tuple[list, list]:
-    """Leadership first (prioritised), then random others, capped at `size`."""
-    lead = [x for x in pool if x in leaders]
-    others = [x for x in pool if x not in leaders]
-    random.shuffle(lead)
-    random.shuffle(others)
-    ordered = lead + others
-    roster = ordered[:size] if size else ordered
-    bench = [x for x in ordered if x not in roster]
-    return roster, bench
-
-
-class RosterProposalView(discord.ui.View):
-    def __init__(
-        self,
-        guild_id: int,
-        roster: list[int],
-        bench: list[int],
-        leaders: set[int],
-        size: int,
+    @discord.ui.button(
+        label="I can come",
+        style=discord.ButtonStyle.success,
+        emoji="✅",
+        custom_id="kos:muster",
+    )
+    async def toggle(
+        self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        super().__init__(timeout=3600)
-        self.guild_id = guild_id
-        self.roster = list(roster)
-        self.bench = list(bench)
-        self.leaders = set(leaders)
-        self.size = size
-        self.confirmed = False
-        self._rebuild()
-
-    def _name(self, mid: int) -> str:
-        crown = "👑 " if mid in self.leaders else ""
-        return f"{crown}<@{mid}>"
-
-    def embed(self) -> discord.Embed:
-        if self.confirmed:
-            title, color = "✅  KOS Roster — Confirmed", 0x22C55E
+        store = guild_store(DATA, interaction.guild_id)
+        musters = store["kos_musters"]
+        key = str(interaction.message.id)
+        rec = musters.get(key)
+        if rec is None:
+            desc = (
+                interaction.message.embeds[0].description
+                if interaction.message.embeds
+                else ""
+            )
+            rec = {"text": desc or "", "attendees": []}
+            musters[key] = rec
+        uid = interaction.user.id
+        if uid in rec["attendees"]:
+            rec["attendees"].remove(uid)
+            note = "You're marked as **out**."
         else:
-            title, color = "🎯  KOS Roster Proposal", EMBED_COLOR
-        roster_txt = (
-            "\n".join(f"`{i:>2}` {self._name(m)}" for i, m in enumerate(self.roster, 1))
-            or "*(empty)*"
-        )
-        embed = discord.Embed(
-            title=title,
-            color=color,
-            timestamp=datetime.datetime.now(datetime.timezone.utc),
-        )
-        embed.add_field(
-            name=f"Squad · {len(self.roster)}/{self.size}",
-            value=roster_txt[:1024],
-            inline=False,
-        )
-        if self.bench and not self.confirmed:
-            bench_txt = ", ".join(f"<@{m}>" for m in self.bench[:25])
-            embed.add_field(
-                name=f"Bench · {len(self.bench)}", value=bench_txt[:1024], inline=False
-            )
-        embed.set_footer(
-            text="👑 leadership (prioritised) · leadership: confirm, reshuffle or sub"
-        )
-        return embed
-
-    def _rebuild(self) -> None:
-        self.clear_items()
-        if self.confirmed:
-            return
-        self.add_item(_RPConfirm(self))
-        self.add_item(_RPReshuffle(self))
-        guild = bot.get_guild(self.guild_id)
-        if self.roster:
-            self.add_item(_RPRemove(self, guild))
-        if self.bench and len(self.roster) < self.size:
-            self.add_item(_RPAdd(self, guild))
-
-    async def refresh(self, interaction: discord.Interaction) -> None:
-        self._rebuild()
-        await interaction.response.edit_message(embed=self.embed(), view=self)
-
-
-def _member_options(
-    guild: discord.Guild | None, ids: list[int], leaders: set[int]
-) -> list[discord.SelectOption]:
-    opts = []
-    for mid in ids[:25]:
-        mem = guild.get_member(mid) if guild else None
-        label = (mem.display_name if mem else str(mid))[:100]
-        opts.append(
-            discord.SelectOption(
-                label=label, value=str(mid), emoji="👑" if mid in leaders else None
-            )
-        )
-    return opts or [discord.SelectOption(label="—", value="0")]
-
-
-class _RPConfirm(discord.ui.Button):
-    def __init__(self, parent: RosterProposalView) -> None:
-        super().__init__(label="Confirm", style=discord.ButtonStyle.success, emoji="✅", row=0)
-        self.parent = parent
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can confirm.", ephemeral=True
-            )
-            return
-        await interaction.response.defer()
-        guild = interaction.guild
-        store = guild_store(DATA, guild.id)
-        role = _kos_role(guild, store)
-        added = []
-        for mid in self.parent.roster:
-            if any(k.get("id") == mid for k in store["kos"]):
-                continue
-            mem = guild.get_member(mid)
-            if mem is None:
-                try:
-                    mem = await guild.fetch_member(mid)
-                except (discord.NotFound, discord.HTTPException):
-                    mem = None
-            if role is not None and mem is not None:
-                try:
-                    await mem.add_roles(role, reason=f"KOS roster by {interaction.user}")
-                except (discord.Forbidden, discord.HTTPException):
-                    pass
-            store["kos"].append(
-                {
-                    "id": mid,
-                    "name": mem.display_name if mem else str(mid),
-                    "note": "roster draw",
-                    "added_by": str(interaction.user),
-                    "at": now_stamp(),
-                }
-            )
-            added.append(mid)
+            rec["attendees"].append(uid)
+            note = "You're marked as **in**. ✅"
         save_data(DATA)
-        self.parent.confirmed = True
-        self.parent._rebuild()
-        await interaction.message.edit(embed=self.parent.embed(), view=self.parent)
-        await interaction.followup.send(
-            f"✅ Roster confirmed — **{len(added)}** added to the KOS list.",
-            ephemeral=True,
+        await interaction.response.edit_message(
+            embed=_muster_embed(rec["text"], rec["attendees"]), view=self
         )
-        await send_log(
-            guild,
-            store,
-            f"🎯 {interaction.user.mention} confirmed a drawn KOS roster.",
-            category="kos",
-            actor=interaction.user,
-            fields=[("Added", str(len(added)), True)],
-        )
+        try:
+            await interaction.followup.send(note, ephemeral=True)
+        except discord.HTTPException:
+            pass
 
 
-class _RPReshuffle(discord.ui.Button):
-    def __init__(self, parent: RosterProposalView) -> None:
-        super().__init__(label="Reshuffle", style=discord.ButtonStyle.secondary, emoji="🔀", row=0)
-        self.parent = parent
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can reshuffle.", ephemeral=True
-            )
-            return
-        pool = self.parent.roster + self.parent.bench
-        self.parent.roster, self.parent.bench = _draw_roster(
-            pool, self.parent.leaders, self.parent.size
-        )
-        await self.parent.refresh(interaction)
-
-
-class _RPRemove(discord.ui.Select):
-    def __init__(self, parent: RosterProposalView, guild) -> None:
-        self.parent = parent
-        super().__init__(
-            placeholder="➖ Sub out (remove from squad)…",
-            options=_member_options(guild, parent.roster, parent.leaders),
-            min_values=1,
-            max_values=1,
-            row=1,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can sub.", ephemeral=True
-            )
-            return
-        mid = int(self.values[0])
-        if mid in self.parent.roster:
-            self.parent.roster.remove(mid)
-            self.parent.bench.insert(0, mid)
-        await self.parent.refresh(interaction)
-
-
-class _RPAdd(discord.ui.Select):
-    def __init__(self, parent: RosterProposalView, guild) -> None:
-        self.parent = parent
-        super().__init__(
-            placeholder="➕ Sub in (add from bench)…",
-            options=_member_options(guild, parent.bench, parent.leaders),
-            min_values=1,
-            max_values=1,
-            row=2,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can sub.", ephemeral=True
-            )
-            return
-        mid = int(self.values[0])
-        if mid in self.parent.bench and len(self.parent.roster) < self.parent.size:
-            self.parent.bench.remove(mid)
-            self.parent.roster.append(mid)
-        await self.parent.refresh(interaction)
+MUSTER_VIEW = MusterView()
 
 
 @kos_group.command(
-    name="draw",
-    description="Draw a KOS roster from a message's reactions (leadership)",
+    name="callout",
+    description="Post a KOS call-out with a tick button for who can come (leadership)",
 )
-@app_commands.describe(
-    message="Message link or ID to read reactions from",
-    emoji="The reaction emoji that counts (e.g. ✅)",
-    size="How many to put on the roster",
-)
-async def kos_draw(
-    interaction: discord.Interaction, message: str, emoji: str, size: int
-) -> None:
+@app_commands.describe(text="What the call-out should say")
+async def kos_callout(interaction: discord.Interaction, text: str) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
-            "Only leadership can draw a roster.", ephemeral=True
-        )
-        return
-    if size < 1:
-        await interaction.response.send_message(
-            "Size must be at least 1.", ephemeral=True
+            "Only leadership can post a call-out.", ephemeral=True
         )
         return
     store = guild_store(DATA, interaction.guild_id)
-    staff = (
-        interaction.guild.get_channel(store["staff_channel_id"])
-        if store.get("staff_channel_id")
-        else None
-    )
-    if staff is None:
-        await interaction.response.send_message(
-            "Set a staff channel first: `/config set` → **Staff channel**.",
-            ephemeral=True,
-        )
-        return
-
-    await interaction.response.defer(ephemeral=True)
-    msg = await _fetch_target_message(interaction, message)
-    if msg is None:
-        await interaction.followup.send(
-            "Couldn't find that message — use a message **link**, or an ID in this "
-            "channel.",
-            ephemeral=True,
-        )
-        return
-    reactors = await _reactors_for_emoji(msg, emoji, interaction.guild)
-    if reactors is None:
-        await interaction.followup.send(
-            f"No {emoji} reaction found on that message.", ephemeral=True
-        )
-        return
-    if not reactors:
-        await interaction.followup.send(
-            "Nobody in this server reacted with that emoji.", ephemeral=True
-        )
-        return
-
-    leader_ids = {m.id for m in reactors if is_leadership(m)}
-    pool = [m.id for m in reactors]
-    roster, bench = _draw_roster(pool, leader_ids, size)
-    view = RosterProposalView(interaction.guild_id, roster, bench, leader_ids, size)
-    await staff.send(
-        content="🎯 **New KOS roster proposal** — leadership, confirm / reshuffle / sub.",
-        embed=view.embed(),
-        view=view,
-    )
-    await interaction.followup.send(
-        f"Proposal posted to {staff.mention} "
-        f"({len(reactors)} reacted, squad of {min(size, len(reactors))}). ✅",
-        ephemeral=True,
+    await interaction.response.send_message(embed=_muster_embed(text, []), view=MUSTER_VIEW)
+    msg = await interaction.original_response()
+    store["kos_musters"][str(msg.id)] = {"text": text, "attendees": []}
+    save_data(DATA)
+    await send_log(
+        interaction.guild,
+        store,
+        f"🎯 {interaction.user.mention} posted a KOS call-out.",
+        category="kos",
+        actor=interaction.user,
     )
 
 
@@ -3095,6 +2840,7 @@ async def on_ready() -> None:
     bot.add_view(RADIO_PANEL_VIEW)
     bot.add_view(TICKET_PANEL_VIEW)
     bot.add_view(ORDER_TICKET_VIEW)
+    bot.add_view(MUSTER_VIEW)
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))
