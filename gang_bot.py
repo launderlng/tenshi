@@ -119,6 +119,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "order_log_channel_id": None,
             "join_log_channel_id": None,
             "welcome_channel_id": None,
+            "staff_channel_id": None,
             "roster_log_channel_id": None,
             "kos_log_channel_id": None,
             "radio_log_channel_id": None,
@@ -156,6 +157,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("member_log_channel_id", None)
     g.setdefault("join_log_channel_id", None)
     g.setdefault("welcome_channel_id", None)
+    g.setdefault("staff_channel_id", None)
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
     g.setdefault("tickets_open", True)
@@ -1162,6 +1164,351 @@ async def kos_reset(interaction: discord.Interaction) -> None:
     )
 
 
+# ---- /kos draw (build a roster from a message's reactions) ------------------- #
+
+_MSG_LINK_RE = re.compile(r"/channels/\d+/(\d+)/(\d+)")
+
+
+async def _fetch_target_message(
+    interaction: discord.Interaction, ref: str
+) -> discord.Message | None:
+    ref = ref.strip()
+    m = _MSG_LINK_RE.search(ref)
+    if m:
+        ch = interaction.guild.get_channel(int(m.group(1)))
+        if ch is None:
+            return None
+        try:
+            return await ch.fetch_message(int(m.group(2)))
+        except discord.HTTPException:
+            return None
+    if ref.isdigit() and interaction.channel is not None:
+        try:
+            return await interaction.channel.fetch_message(int(ref))
+        except discord.HTTPException:
+            return None
+    return None
+
+
+async def _reactors_for_emoji(
+    message: discord.Message, emoji: str, guild: discord.Guild
+) -> list[discord.Member] | None:
+    want = emoji.strip()
+    want_name = want.strip(":")
+    target = None
+    for r in message.reactions:
+        e = r.emoji
+        if str(e) == want or getattr(e, "name", None) == want_name:
+            target = r
+            break
+    if target is None:
+        return None
+    members: list[discord.Member] = []
+    async for user in target.users():
+        if user.bot:
+            continue
+        mem = guild.get_member(user.id)
+        if mem is None:
+            try:
+                mem = await guild.fetch_member(user.id)
+            except (discord.NotFound, discord.HTTPException):
+                mem = None
+        if mem is not None:
+            members.append(mem)
+    return members
+
+
+def _draw_roster(pool: list[int], leaders: set[int], size: int) -> tuple[list, list]:
+    """Leadership first (prioritised), then random others, capped at `size`."""
+    lead = [x for x in pool if x in leaders]
+    others = [x for x in pool if x not in leaders]
+    random.shuffle(lead)
+    random.shuffle(others)
+    ordered = lead + others
+    roster = ordered[:size] if size else ordered
+    bench = [x for x in ordered if x not in roster]
+    return roster, bench
+
+
+class RosterProposalView(discord.ui.View):
+    def __init__(
+        self,
+        guild_id: int,
+        roster: list[int],
+        bench: list[int],
+        leaders: set[int],
+        size: int,
+    ) -> None:
+        super().__init__(timeout=3600)
+        self.guild_id = guild_id
+        self.roster = list(roster)
+        self.bench = list(bench)
+        self.leaders = set(leaders)
+        self.size = size
+        self.confirmed = False
+        self._rebuild()
+
+    def _name(self, mid: int) -> str:
+        crown = "👑 " if mid in self.leaders else ""
+        return f"{crown}<@{mid}>"
+
+    def embed(self) -> discord.Embed:
+        if self.confirmed:
+            title, color = "✅  KOS Roster — Confirmed", 0x22C55E
+        else:
+            title, color = "🎯  KOS Roster Proposal", EMBED_COLOR
+        roster_txt = (
+            "\n".join(f"`{i:>2}` {self._name(m)}" for i, m in enumerate(self.roster, 1))
+            or "*(empty)*"
+        )
+        embed = discord.Embed(
+            title=title,
+            color=color,
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        embed.add_field(
+            name=f"Squad · {len(self.roster)}/{self.size}",
+            value=roster_txt[:1024],
+            inline=False,
+        )
+        if self.bench and not self.confirmed:
+            bench_txt = ", ".join(f"<@{m}>" for m in self.bench[:25])
+            embed.add_field(
+                name=f"Bench · {len(self.bench)}", value=bench_txt[:1024], inline=False
+            )
+        embed.set_footer(
+            text="👑 leadership (prioritised) · leadership: confirm, reshuffle or sub"
+        )
+        return embed
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+        if self.confirmed:
+            return
+        self.add_item(_RPConfirm(self))
+        self.add_item(_RPReshuffle(self))
+        guild = bot.get_guild(self.guild_id)
+        if self.roster:
+            self.add_item(_RPRemove(self, guild))
+        if self.bench and len(self.roster) < self.size:
+            self.add_item(_RPAdd(self, guild))
+
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.embed(), view=self)
+
+
+def _member_options(
+    guild: discord.Guild | None, ids: list[int], leaders: set[int]
+) -> list[discord.SelectOption]:
+    opts = []
+    for mid in ids[:25]:
+        mem = guild.get_member(mid) if guild else None
+        label = (mem.display_name if mem else str(mid))[:100]
+        opts.append(
+            discord.SelectOption(
+                label=label, value=str(mid), emoji="👑" if mid in leaders else None
+            )
+        )
+    return opts or [discord.SelectOption(label="—", value="0")]
+
+
+class _RPConfirm(discord.ui.Button):
+    def __init__(self, parent: RosterProposalView) -> None:
+        super().__init__(label="Confirm", style=discord.ButtonStyle.success, emoji="✅", row=0)
+        self.parent = parent
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can confirm.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        guild = interaction.guild
+        store = guild_store(DATA, guild.id)
+        role = _kos_role(guild, store)
+        added = []
+        for mid in self.parent.roster:
+            if any(k.get("id") == mid for k in store["kos"]):
+                continue
+            mem = guild.get_member(mid)
+            if mem is None:
+                try:
+                    mem = await guild.fetch_member(mid)
+                except (discord.NotFound, discord.HTTPException):
+                    mem = None
+            if role is not None and mem is not None:
+                try:
+                    await mem.add_roles(role, reason=f"KOS roster by {interaction.user}")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+            store["kos"].append(
+                {
+                    "id": mid,
+                    "name": mem.display_name if mem else str(mid),
+                    "note": "roster draw",
+                    "added_by": str(interaction.user),
+                    "at": now_stamp(),
+                }
+            )
+            added.append(mid)
+        save_data(DATA)
+        self.parent.confirmed = True
+        self.parent._rebuild()
+        await interaction.message.edit(embed=self.parent.embed(), view=self.parent)
+        await interaction.followup.send(
+            f"✅ Roster confirmed — **{len(added)}** added to the KOS list.",
+            ephemeral=True,
+        )
+        await send_log(
+            guild,
+            store,
+            f"🎯 {interaction.user.mention} confirmed a drawn KOS roster.",
+            category="kos",
+            actor=interaction.user,
+            fields=[("Added", str(len(added)), True)],
+        )
+
+
+class _RPReshuffle(discord.ui.Button):
+    def __init__(self, parent: RosterProposalView) -> None:
+        super().__init__(label="Reshuffle", style=discord.ButtonStyle.secondary, emoji="🔀", row=0)
+        self.parent = parent
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can reshuffle.", ephemeral=True
+            )
+            return
+        pool = self.parent.roster + self.parent.bench
+        self.parent.roster, self.parent.bench = _draw_roster(
+            pool, self.parent.leaders, self.parent.size
+        )
+        await self.parent.refresh(interaction)
+
+
+class _RPRemove(discord.ui.Select):
+    def __init__(self, parent: RosterProposalView, guild) -> None:
+        self.parent = parent
+        super().__init__(
+            placeholder="➖ Sub out (remove from squad)…",
+            options=_member_options(guild, parent.roster, parent.leaders),
+            min_values=1,
+            max_values=1,
+            row=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can sub.", ephemeral=True
+            )
+            return
+        mid = int(self.values[0])
+        if mid in self.parent.roster:
+            self.parent.roster.remove(mid)
+            self.parent.bench.insert(0, mid)
+        await self.parent.refresh(interaction)
+
+
+class _RPAdd(discord.ui.Select):
+    def __init__(self, parent: RosterProposalView, guild) -> None:
+        self.parent = parent
+        super().__init__(
+            placeholder="➕ Sub in (add from bench)…",
+            options=_member_options(guild, parent.bench, parent.leaders),
+            min_values=1,
+            max_values=1,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can sub.", ephemeral=True
+            )
+            return
+        mid = int(self.values[0])
+        if mid in self.parent.bench and len(self.parent.roster) < self.parent.size:
+            self.parent.bench.remove(mid)
+            self.parent.roster.append(mid)
+        await self.parent.refresh(interaction)
+
+
+@kos_group.command(
+    name="draw",
+    description="Draw a KOS roster from a message's reactions (leadership)",
+)
+@app_commands.describe(
+    message="Message link or ID to read reactions from",
+    emoji="The reaction emoji that counts (e.g. ✅)",
+    size="How many to put on the roster",
+)
+async def kos_draw(
+    interaction: discord.Interaction, message: str, emoji: str, size: int
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can draw a roster.", ephemeral=True
+        )
+        return
+    if size < 1:
+        await interaction.response.send_message(
+            "Size must be at least 1.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    staff = (
+        interaction.guild.get_channel(store["staff_channel_id"])
+        if store.get("staff_channel_id")
+        else None
+    )
+    if staff is None:
+        await interaction.response.send_message(
+            "Set a staff channel first: `/config set` → **Staff channel**.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    msg = await _fetch_target_message(interaction, message)
+    if msg is None:
+        await interaction.followup.send(
+            "Couldn't find that message — use a message **link**, or an ID in this "
+            "channel.",
+            ephemeral=True,
+        )
+        return
+    reactors = await _reactors_for_emoji(msg, emoji, interaction.guild)
+    if reactors is None:
+        await interaction.followup.send(
+            f"No {emoji} reaction found on that message.", ephemeral=True
+        )
+        return
+    if not reactors:
+        await interaction.followup.send(
+            "Nobody in this server reacted with that emoji.", ephemeral=True
+        )
+        return
+
+    leader_ids = {m.id for m in reactors if is_leadership(m)}
+    pool = [m.id for m in reactors]
+    roster, bench = _draw_roster(pool, leader_ids, size)
+    view = RosterProposalView(interaction.guild_id, roster, bench, leader_ids, size)
+    await staff.send(
+        content="🎯 **New KOS roster proposal** — leadership, confirm / reshuffle / sub.",
+        embed=view.embed(),
+        view=view,
+    )
+    await interaction.followup.send(
+        f"Proposal posted to {staff.mention} "
+        f"({len(reactors)} reacted, squad of {min(size, len(reactors))}). ✅",
+        ephemeral=True,
+    )
+
+
 # ---- /config (one command for every channel/role setting) ------------------- #
 
 # setting value -> (label, store key, kind)
@@ -1177,6 +1524,7 @@ CONFIG_SETTINGS = {
     "ticket_log_channel": ("Ticket log channel", "ticket_log_channel_id", "channel"),
     "order_log_channel": ("Order log channel", "order_log_channel_id", "channel"),
     "welcome_channel": ("Welcome channel", "welcome_channel_id", "channel"),
+    "staff_channel": ("Staff channel", "staff_channel_id", "channel"),
     "eoi_channel": ("EOI channel", "eoi_channel_id", "channel"),
     "transcript_channel": ("Transcript channel", "transcript_channel_id", "channel"),
     "roster_role": ("Roster default role", "roster_role_id", "role"),
@@ -1204,6 +1552,7 @@ CONFIG_SETTINGS = {
         app_commands.Choice(name="Role log channel", value="member_log_channel"),
         app_commands.Choice(name="Join/leave log channel", value="join_log_channel"),
         app_commands.Choice(name="Welcome channel", value="welcome_channel"),
+        app_commands.Choice(name="Staff channel", value="staff_channel"),
         app_commands.Choice(name="Ticket log channel", value="ticket_log_channel"),
         app_commands.Choice(name="Order log channel", value="order_log_channel"),
         app_commands.Choice(name="EOI channel", value="eoi_channel"),
@@ -1308,6 +1657,7 @@ async def config_view(interaction: discord.Interaction) -> None:
         name="📁 Other",
         value=(
             f"👋 Welcome: {ch('welcome_channel_id')}\n"
+            f"🛡️ Staff: {ch('staff_channel_id')}\n"
             f"📨 EOI: {ch('eoi_channel_id')}\n"
             f"🧾 Transcripts: {ch('transcript_channel_id')}"
         ),
