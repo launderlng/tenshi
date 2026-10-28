@@ -11,7 +11,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | Command | What it does | Who |
 |---|---|---|
 | `/roster view` | Show the roster | Everyone |
-| `/roster add @member [+4 more] [rank]` | Add up to 5 members; a picked rank gives that rank's role | Everyone |
+| `/roster add @member [more] [rank]` | Add up to 30 members (pick one + paste the rest); a rank gives that rank's role | Everyone |
 | `/roster remove @member` | Remove a member and take the role back | Everyone |
 | `/roster reset` | Wipe the roster list (keeps everyone's role) | Leadership |
 | `/roster rank_set <name> <role>` | Map a rank name to a server role | Leadership |
@@ -21,7 +21,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | Command | What it does | Who |
 |---|---|---|
 | `/kos view` | Show the KOS list | Everyone |
-| `/kos add @member [+4 more] [reason]` | Add up to 5 to KOS and give the KOS role | Everyone |
+| `/kos add @member [more] [reason]` | Add up to 30 to KOS (pick one + paste the rest) and give the KOS role | Everyone |
 | `/kos remove @member` | Remove and take the role back | Everyone |
 | `/kos reset` | Wipe the list (keeps roles) | Leadership |
 

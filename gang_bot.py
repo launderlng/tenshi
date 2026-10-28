@@ -690,6 +690,36 @@ def _dedupe_members(members: list[discord.Member | None]) -> list[discord.Member
     return out
 
 
+_ID_RE = re.compile(r"(\d{17,20})")
+
+
+async def _collect_members(
+    guild: discord.Guild,
+    first: discord.Member,
+    more_text: str | None,
+    limit: int = 30,
+) -> list[discord.Member]:
+    """A picked member plus any @mentions/IDs pasted in `more_text`, up to `limit`."""
+    out: list[discord.Member] = [first]
+    seen = {first.id}
+    for raw in _ID_RE.findall(more_text or ""):
+        mid = int(raw)
+        if mid in seen:
+            continue
+        seen.add(mid)
+        member = guild.get_member(mid)
+        if member is None:
+            try:
+                member = await guild.fetch_member(mid)
+            except (discord.NotFound, discord.HTTPException):
+                member = None
+        if member is not None:
+            out.append(member)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def _rank_role(
     guild: discord.Guild, store: dict[str, Any], rank_name: str
 ) -> discord.Role | None:
@@ -815,32 +845,27 @@ async def roster_view(interaction: discord.Interaction) -> None:
 
 @roster_group.command(
     name="add",
-    description="Add up to 5 members to the roster and give them a rank's role",
+    description="Add up to 30 members to the roster and give them a rank's role",
 )
 @app_commands.describe(
     member="Member to add (@mention them)",
-    member2="Another member (optional)",
-    member3="Another member (optional)",
-    member4="Another member (optional)",
-    member5="Another member (optional)",
+    more="Paste extra @mentions or IDs here to add many at once (up to 30 total)",
     rank="Rank to assign — pick from your configured ranks (optional)",
 )
 @app_commands.autocomplete(rank=rank_autocomplete)
 async def roster_add(
     interaction: discord.Interaction,
     member: discord.Member,
-    member2: discord.Member | None = None,
-    member3: discord.Member | None = None,
-    member4: discord.Member | None = None,
-    member5: discord.Member | None = None,
+    more: str | None = None,
     rank: str | None = None,
 ) -> None:
+    await interaction.response.defer()
     store = guild_store(DATA, interaction.guild_id)
     rank_role = _rank_role(interaction.guild, store, rank) if rank else None
     base_role = _roster_role(interaction.guild, store)
     # A picked rank's role wins; otherwise fall back to the default roster role.
     role = rank_role or base_role
-    targets = _dedupe_members([member, member2, member3, member4, member5])
+    targets = await _collect_members(interaction.guild, member, more, limit=30)
 
     added, skipped, role_fail = [], [], []
     for m in targets:
@@ -867,7 +892,7 @@ async def roster_add(
     as_rank = f" as **{rank}**" if rank else ""
     lines = []
     if added:
-        lines.append(f"✅ Added {', '.join(added)} to the roster{as_rank}.")
+        lines.append(f"✅ Added **{len(added)}** to the roster{as_rank}: {', '.join(added)}")
     if skipped:
         lines.append(f"ℹ️ Already on the roster: {', '.join(skipped)}.")
     if rank and rank_role is None:
@@ -884,7 +909,7 @@ async def roster_add(
             f"⚠️ Couldn't give the {role.mention} role to {', '.join(role_fail)} "
             "— check I have **Manage Roles** and my role sits above it."
         )
-    await interaction.response.send_message("\n".join(lines) or "Nothing to add.")
+    await interaction.followup.send("\n".join(lines)[:2000] or "Nothing to add.")
 
     if added:
         await send_log(
@@ -1002,28 +1027,23 @@ async def kos_view(interaction: discord.Interaction) -> None:
 
 @kos_group.command(
     name="add",
-    description="Add up to 5 members to the KOS list and give them the KOS role",
+    description="Add up to 30 members to the KOS list and give them the KOS role",
 )
 @app_commands.describe(
     member="Member to KOS (@mention them)",
-    member2="Another member (optional)",
-    member3="Another member (optional)",
-    member4="Another member (optional)",
-    member5="Another member (optional)",
+    more="Paste extra @mentions or IDs here to KOS many at once (up to 30 total)",
     reason="Optional reason applied to everyone added",
 )
 async def kos_add(
     interaction: discord.Interaction,
     member: discord.Member,
-    member2: discord.Member | None = None,
-    member3: discord.Member | None = None,
-    member4: discord.Member | None = None,
-    member5: discord.Member | None = None,
+    more: str | None = None,
     reason: str | None = None,
 ) -> None:
+    await interaction.response.defer()
     store = guild_store(DATA, interaction.guild_id)
     role = _kos_role(interaction.guild, store)
-    targets = _dedupe_members([member, member2, member3, member4, member5])
+    targets = await _collect_members(interaction.guild, member, more, limit=30)
 
     added, skipped, role_fail = [], [], []
     for m in targets:
@@ -1049,7 +1069,7 @@ async def kos_add(
 
     lines = []
     if added:
-        lines.append(f"💀 Added {', '.join(added)} to the KOS list.")
+        lines.append(f"💀 Added **{len(added)}** to the KOS list: {', '.join(added)}")
     if skipped:
         lines.append(f"ℹ️ Already KOS: {', '.join(skipped)}.")
     if role is None:
@@ -1061,7 +1081,7 @@ async def kos_add(
             f"⚠️ Couldn't give the {role.mention} role to {', '.join(role_fail)} "
             "— check I have **Manage Roles** and my role sits above it."
         )
-    await interaction.response.send_message("\n".join(lines) or "Nothing to add.")
+    await interaction.followup.send("\n".join(lines)[:2000] or "Nothing to add.")
 
     if added:
         await send_log(
