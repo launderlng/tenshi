@@ -117,6 +117,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "log_channel_id": None,
             "ticket_log_channel_id": None,
             "order_log_channel_id": None,
+            "join_log_channel_id": None,
+            "welcome_channel_id": None,
             "roster_log_channel_id": None,
             "kos_log_channel_id": None,
             "radio_log_channel_id": None,
@@ -152,6 +154,8 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("radio_log_channel_id", None)
     g.setdefault("eoi_log_channel_id", None)
     g.setdefault("member_log_channel_id", None)
+    g.setdefault("join_log_channel_id", None)
+    g.setdefault("welcome_channel_id", None)
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
     g.setdefault("tickets_open", True)
@@ -164,7 +168,10 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 intents = discord.Intents.default()
-# message content is not needed; everything here is slash commands + components
+# members intent is REQUIRED for join/leave events + welcome messages.
+# You MUST enable "Server Members Intent" in the Discord Developer Portal
+# (Bot → Privileged Gateway Intents) or the bot will fail to start.
+intents.members = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 DATA = load_data()
 
@@ -195,6 +202,7 @@ LOG_CATEGORIES = {
     "radio": ("📻", "Radio", 0xA855F7),
     "eoi": ("📨", "Recruitment", 0x10B981),
     "members": ("🎭", "Roles", 0xEC4899),
+    "joins": ("🚪", "Joins & Leaves", 0x14B8A6),
     "tickets": ("🎫", "Tickets", 0x0EA5E9),
     "orders": ("💰", "Orders", 0xF59E0B),
     "config": ("⚙️", "Config", 0x6B7280),
@@ -208,6 +216,7 @@ LOG_ROUTING = {
     "radio": "radio_log_channel_id",
     "eoi": "eoi_log_channel_id",
     "members": "member_log_channel_id",
+    "joins": "join_log_channel_id",
     "tickets": "ticket_log_channel_id",
     "orders": "order_log_channel_id",
 }
@@ -1141,8 +1150,10 @@ CONFIG_SETTINGS = {
     "radio_log_channel": ("Radio log channel", "radio_log_channel_id", "channel"),
     "eoi_log_channel": ("Recruitment log channel", "eoi_log_channel_id", "channel"),
     "member_log_channel": ("Role log channel", "member_log_channel_id", "channel"),
+    "join_log_channel": ("Join/leave log channel", "join_log_channel_id", "channel"),
     "ticket_log_channel": ("Ticket log channel", "ticket_log_channel_id", "channel"),
     "order_log_channel": ("Order log channel", "order_log_channel_id", "channel"),
+    "welcome_channel": ("Welcome channel", "welcome_channel_id", "channel"),
     "eoi_channel": ("EOI channel", "eoi_channel_id", "channel"),
     "transcript_channel": ("Transcript channel", "transcript_channel_id", "channel"),
     "roster_role": ("Roster default role", "roster_role_id", "role"),
@@ -1168,6 +1179,8 @@ CONFIG_SETTINGS = {
         app_commands.Choice(name="Radio log channel", value="radio_log_channel"),
         app_commands.Choice(name="Recruitment log channel", value="eoi_log_channel"),
         app_commands.Choice(name="Role log channel", value="member_log_channel"),
+        app_commands.Choice(name="Join/leave log channel", value="join_log_channel"),
+        app_commands.Choice(name="Welcome channel", value="welcome_channel"),
         app_commands.Choice(name="Ticket log channel", value="ticket_log_channel"),
         app_commands.Choice(name="Order log channel", value="order_log_channel"),
         app_commands.Choice(name="EOI channel", value="eoi_channel"),
@@ -1254,14 +1267,6 @@ async def config_view(interaction: discord.Interaction) -> None:
         inline=False,
     )
     embed.add_field(
-        name="📁 Channels",
-        value=(
-            f"EOI: {ch('eoi_channel_id')}\n"
-            f"Transcripts: {ch('transcript_channel_id')}"
-        ),
-        inline=False,
-    )
-    embed.add_field(
         name="📝 Log channels",
         value=(
             f"General: {ch('log_channel_id')}\n"
@@ -1270,8 +1275,18 @@ async def config_view(interaction: discord.Interaction) -> None:
             f"📻 Radio: {ch('radio_log_channel_id')}\n"
             f"📨 Recruitment: {ch('eoi_log_channel_id')}\n"
             f"🎭 Roles: {ch('member_log_channel_id')}\n"
+            f"🚪 Joins/Leaves: {ch('join_log_channel_id')}\n"
             f"🎫 Tickets: {ch('ticket_log_channel_id')}\n"
             f"💰 Orders: {ch('order_log_channel_id')}"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="📁 Other",
+        value=(
+            f"👋 Welcome: {ch('welcome_channel_id')}\n"
+            f"📨 EOI: {ch('eoi_channel_id')}\n"
+            f"🧾 Transcripts: {ch('transcript_channel_id')}"
         ),
         inline=False,
     )
@@ -2604,6 +2619,7 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
             ("radio-logs", "radio_log_channel_id"),
             ("recruitment-logs", "eoi_log_channel_id"),
             ("role-logs", "member_log_channel_id"),
+            ("join-logs", "join_log_channel_id"),
             ("ticket-logs", "ticket_log_channel_id"),
             ("order-logs", "order_log_channel_id"),
         ]
@@ -2739,12 +2755,88 @@ async def on_guild_join(guild: discord.Guild) -> None:
             pass
 
 
+@bot.event
+async def on_member_join(member: discord.Member) -> None:
+    guild = member.guild
+    store = guild_store(DATA, guild.id)
+
+    # public welcome message
+    wid = store.get("welcome_channel_id")
+    wchannel = guild.get_channel(wid) if wid else None
+    if wchannel is not None:
+        embed = discord.Embed(
+            title=f"👋  Welcome to {guild.name}!",
+            description=(
+                f"Hey {member.mention}, glad to have you.\n"
+                "Grab your roles, read the rules, and if you want to join up use "
+                "`/eoi` to apply."
+            ),
+            color=EMBED_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.set_footer(text=f"Member #{guild.member_count}")
+        try:
+            await wchannel.send(
+                content=member.mention,
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except discord.HTTPException:
+            pass
+
+    # join log
+    created = int(member.created_at.timestamp())
+    await send_log(
+        guild,
+        store,
+        f"📥 {member.mention} **joined**.",
+        category="joins",
+        fields=[
+            ("User", f"`{member}` · `{member.id}`", True),
+            ("Account made", f"<t:{created}:R>", True),
+            ("Member #", str(guild.member_count), True),
+        ],
+    )
+
+
+@bot.event
+async def on_member_remove(member: discord.Member) -> None:
+    guild = member.guild
+    store = guild_store(DATA, guild.id)
+    joined = member.joined_at
+    roles = [r.mention for r in member.roles if r.name != "@everyone"]
+    fields = [
+        ("User", f"`{member}` · `{member.id}`", True),
+        ("Member #", str(guild.member_count), True),
+    ]
+    if joined is not None:
+        fields.append(("Joined", f"<t:{int(joined.timestamp())}:R>", True))
+    if roles:
+        fields.append(("Roles", " ".join(roles)[:1024], False))
+    await send_log(
+        guild,
+        store,
+        f"📤 **{member}** left.",
+        category="joins",
+        fields=fields,
+    )
+
+
 def main() -> None:
     if not TOKEN:
         raise SystemExit(
             "DISCORD_TOKEN is not set. Add it as an environment variable."
         )
-    bot.run(TOKEN, log_handler=None)
+    try:
+        bot.run(TOKEN, log_handler=None)
+    except discord.PrivilegedIntentsRequired:
+        log.error(
+            "Server Members Intent is NOT enabled. Turn it on in the Discord "
+            "Developer Portal → your app → Bot → Privileged Gateway Intents → "
+            "Server Members Intent, then redeploy."
+        )
+        raise
 
 
 if __name__ == "__main__":
