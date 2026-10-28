@@ -168,10 +168,13 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 intents = discord.Intents.default()
-# members intent is REQUIRED for join/leave events + welcome messages.
-# You MUST enable "Server Members Intent" in the Discord Developer Portal
-# (Bot → Privileged Gateway Intents) or the bot will fail to start.
-intents.members = True
+# Join/leave events + welcome messages need the members intent, which is
+# privileged. Turning it on here ALSO requires enabling "Server Members Intent"
+# in the Developer Portal — so it is opt-in via an env var to avoid crashing
+# the whole bot when the portal toggle isn't set yet.
+# To enable: flip Server Members Intent in the portal, then set MEMBERS_INTENT=true.
+MEMBERS_INTENT = os.getenv("MEMBERS_INTENT", "").lower() in ("1", "true", "yes", "on")
+intents.members = MEMBERS_INTENT
 bot = commands.Bot(command_prefix="!", intents=intents)
 DATA = load_data()
 
