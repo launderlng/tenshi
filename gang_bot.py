@@ -1230,14 +1230,14 @@ MUSTER_VIEW = MusterView()
 
 
 @kos_group.command(
-    name="callout",
-    description="Post a KOS call-out with a tick button for who can come (leadership)",
+    name="roster",
+    description="Post a KOS roster with a tick button for who can come (leadership)",
 )
-@app_commands.describe(text="What the call-out should say")
-async def kos_callout(interaction: discord.Interaction, text: str) -> None:
+@app_commands.describe(text="What the roster post should say")
+async def kos_roster(interaction: discord.Interaction, text: str) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
-            "Only leadership can post a call-out.", ephemeral=True
+            "Only leadership can post a roster.", ephemeral=True
         )
         return
     store = guild_store(DATA, interaction.guild_id)
