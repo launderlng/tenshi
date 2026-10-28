@@ -10,7 +10,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 ### Roster
 | Command | What it does | Who |
 |---|---|---|
-| `/roster view` | Show the roster | Everyone |
+| `/roster view` | Show the roster, built live from your rank roles (members grouped by rank) with a 🔄 Refresh button | Everyone |
 | `/roster add @member [more] [rank]` | Add up to 30 members (pick one + paste the rest); a rank gives that rank's role | Everyone |
 | `/roster remove @member` | Remove a member and take the role back | Everyone |
 | `/roster reset` | Wipe the roster list (keeps everyone's role) | Leadership |
