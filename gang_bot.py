@@ -460,8 +460,8 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
 
         if channel_id is None:
             await interaction.followup.send(
-                "No EOI channel is set yet. Ask leadership to set one with "
-                "`/config set eoi_channel`.",
+                "No EOI channel is set yet. Ask leadership to set one from "
+                "the `/setup` settings panel (EOI channel).",
                 ephemeral=True,
             )
             return
@@ -624,9 +624,6 @@ SELF_ROLE_VIEW = SelfRoleView()
 
 roster_group = app_commands.Group(name="roster", description="Manage the gang roster")
 kos_group = app_commands.Group(name="kos", description="Manage the Kill-On-Sight list")
-config_group = app_commands.Group(
-    name="config", description="Bot configuration — channels, roles, logging"
-)
 role_menu_group = app_commands.Group(
     name="role_menu", description="Self-serve role selection menu"
 )
@@ -1062,8 +1059,8 @@ async def roster_add(
         )
     elif role is None:
         lines.append(
-            "⚠️ No role to give — set a rank with `/roster rank_set` or a default "
-            "with `/roster set_role`."
+            "⚠️ No role to give — set a rank with `/roster rank_set`, or set the "
+            "**Roster default role** in the `/setup` settings panel."
         )
     elif role_fail:
         lines.append(
@@ -1235,7 +1232,8 @@ async def kos_add(
         lines.append(f"ℹ️ Already KOS: {', '.join(skipped)}.")
     if role is None:
         lines.append(
-            "⚠️ No KOS role set — run `/kos set_role` so they get one automatically."
+            "⚠️ No KOS role set — set the **KOS role** in the `/setup` settings "
+            "panel so they get one automatically."
         )
     elif role_fail:
         lines.append(
@@ -1412,7 +1410,7 @@ async def kos_roster(interaction: discord.Interaction, text: str) -> None:
     )
 
 
-# ---- /config (one command for every channel/role setting) ------------------- #
+# ---- Settings panel (embed + dropdowns) ------------------------------------- #
 
 # setting value -> (label, store key, kind)
 CONFIG_SETTINGS = {
@@ -1436,101 +1434,97 @@ CONFIG_SETTINGS = {
 }
 
 
-@config_group.command(
-    name="set", description="Set (or clear) a channel/role setting (leadership)"
-)
-@app_commands.describe(
-    setting="Which setting to change",
-    channel="The channel — leave empty to clear a channel setting",
-    role="The role — leave empty to clear a role setting",
-)
-@app_commands.choices(
-    setting=[
-        app_commands.Choice(name="Leadership role (admin only)", value="leadership_role"),
-        app_commands.Choice(name="General log channel", value="log_channel"),
-        app_commands.Choice(name="Roster log channel", value="roster_log_channel"),
-        app_commands.Choice(name="KOS log channel", value="kos_log_channel"),
-        app_commands.Choice(name="Radio log channel", value="radio_log_channel"),
-        app_commands.Choice(name="Recruitment log channel", value="eoi_log_channel"),
-        app_commands.Choice(name="Role log channel", value="member_log_channel"),
-        app_commands.Choice(name="Join/leave log channel", value="join_log_channel"),
-        app_commands.Choice(name="Welcome channel", value="welcome_channel"),
-        app_commands.Choice(name="Staff channel", value="staff_channel"),
-        app_commands.Choice(name="Ticket log channel", value="ticket_log_channel"),
-        app_commands.Choice(name="Order log channel", value="order_log_channel"),
-        app_commands.Choice(name="EOI channel", value="eoi_channel"),
-        app_commands.Choice(name="Transcript channel", value="transcript_channel"),
-        app_commands.Choice(name="Roster default role", value="roster_role"),
-        app_commands.Choice(name="KOS role", value="kos_role"),
-        app_commands.Choice(name="Radio ping role", value="radio_ping_role"),
-    ]
-)
-async def config_set(
-    interaction: discord.Interaction,
-    setting: app_commands.Choice[str],
-    channel: discord.TextChannel | None = None,
-    role: discord.Role | None = None,
-) -> None:
-    label, key, kind = CONFIG_SETTINGS[setting.value]
-    # leadership role is security-sensitive → admins only
-    if setting.value == "leadership_role":
-        if not interaction.user.guild_permissions.administrator:
-            await interaction.response.send_message(
-                "Only a server admin can set the leadership role.", ephemeral=True
-            )
-            return
-    elif not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can change settings.", ephemeral=True
-        )
-        return
+# options for the picker dropdown, built from CONFIG_SETTINGS
+_SETTINGS_OPTIONS = [
+    discord.SelectOption(
+        label=label,
+        value=value,
+        emoji="👑" if kind == "role" else "💬",
+    )
+    for value, (label, key, kind) in CONFIG_SETTINGS.items()
+]
 
+
+async def _apply_setting(
+    interaction: discord.Interaction, value_key: str, new_id: int | None, shown: str
+) -> None:
+    label, key, kind = CONFIG_SETTINGS[value_key]
     store = guild_store(DATA, interaction.guild_id)
-    if kind == "channel":
-        if role is not None and channel is None:
-            await interaction.response.send_message(
-                f"**{label}** takes a channel, not a role.", ephemeral=True
-            )
-            return
-        store[key] = channel.id if channel else None
-        val = channel.mention if channel else "`cleared`"
-    else:
-        if channel is not None and role is None:
-            await interaction.response.send_message(
-                f"**{label}** takes a role, not a channel.", ephemeral=True
-            )
-            return
-        store[key] = role.id if role else None
-        val = role.mention if role else "`cleared`"
+    store[key] = new_id
     save_data(DATA)
     await interaction.response.send_message(
-        f"⚙️  **{label}** → {val}", ephemeral=True
+        f"⚙️  **{label}** → {shown}", ephemeral=True
     )
     await send_log(
         interaction.guild,
         store,
-        f"⚙️ Setting changed: **{label}** → {val}",
+        f"⚙️ Setting changed: **{label}** → {shown}",
         category="config",
         actor=interaction.user,
     )
 
 
-@config_group.command(name="view", description="Show the current configuration")
-async def config_view(interaction: discord.Interaction) -> None:
-    store = guild_store(DATA, interaction.guild_id)
-    g = interaction.guild
+class _ChannelSetSelect(discord.ui.ChannelSelect):
+    def __init__(self, value_key: str) -> None:
+        self.value_key = value_key
+        super().__init__(
+            channel_types=[discord.ChannelType.text],
+            placeholder="Pick a channel…",
+            min_values=1,
+            max_values=1,
+        )
 
+    async def callback(self, interaction: discord.Interaction) -> None:
+        ch = self.values[0]
+        await _apply_setting(interaction, self.value_key, ch.id, ch.mention)
+
+
+class _RoleSetSelect(discord.ui.RoleSelect):
+    def __init__(self, value_key: str) -> None:
+        self.value_key = value_key
+        super().__init__(placeholder="Pick a role…", min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        role = self.values[0]
+        await _apply_setting(interaction, self.value_key, role.id, role.mention)
+
+
+class _ClearSettingButton(discord.ui.Button):
+    def __init__(self, value_key: str) -> None:
+        self.value_key = value_key
+        super().__init__(label="Clear", style=discord.ButtonStyle.danger, emoji="🧹")
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _apply_setting(interaction, self.value_key, None, "`cleared`")
+
+
+class _SettingEditView(discord.ui.View):
+    def __init__(self, value_key: str) -> None:
+        super().__init__(timeout=180)
+        _, _, kind = CONFIG_SETTINGS[value_key]
+        if kind == "channel":
+            self.add_item(_ChannelSetSelect(value_key))
+        else:
+            self.add_item(_RoleSetSelect(value_key))
+        self.add_item(_ClearSettingButton(value_key))
+
+
+def _settings_embed(guild: discord.Guild, store: dict[str, Any]) -> discord.Embed:
     def ch(key: str) -> str:
         cid = store.get(key)
-        c = g.get_channel(cid) if cid else None
+        c = guild.get_channel(cid) if cid else None
         return c.mention if c else "`— not set`"
 
     def ro(key: str) -> str:
         rid = store.get(key)
-        r = g.get_role(rid) if rid else None
+        r = guild.get_role(rid) if rid else None
         return r.mention if r else "`— not set`"
 
-    embed = discord.Embed(title="⚙️  Server Configuration", color=EMBED_COLOR)
+    embed = discord.Embed(
+        title="⚙️  Tenshi — Settings",
+        description="Pick a setting from the dropdown to change it. 🔄 refreshes this list.",
+        color=EMBED_COLOR,
+    )
     embed.add_field(
         name="👑 Roles",
         value=(
@@ -1557,7 +1551,7 @@ async def config_view(interaction: discord.Interaction) -> None:
         inline=False,
     )
     embed.add_field(
-        name="📁 Other",
+        name="📁 Channels",
         value=(
             f"👋 Welcome: {ch('welcome_channel_id')}\n"
             f"🛡️ Staff: {ch('staff_channel_id')}\n"
@@ -1566,16 +1560,64 @@ async def config_view(interaction: discord.Interaction) -> None:
         ),
         inline=False,
     )
-    embed.add_field(
-        name="📦 Content",
-        value=(
-            f"Ticket types: **{len(store.get('ticket_types', []))}**\n"
-            f"Ranks: **{len(store.get('ranks', []))}**"
-        ),
-        inline=False,
+    embed.set_footer(
+        text=f"🎫 {len(store.get('ticket_types', []))} ticket types · "
+        f"🎖️ {len(store.get('ranks', []))} ranks"
     )
-    embed.set_footer(text="Change anything with /config set · create channels with /setup")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    return embed
+
+
+class SettingsPanelView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.select(
+        custom_id="settings:pick",
+        placeholder="⚙️  Change a setting…",
+        min_values=1,
+        max_values=1,
+        options=_SETTINGS_OPTIONS,
+    )
+    async def pick(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        value_key = select.values[0]
+        if value_key == "leadership_role":
+            if not interaction.user.guild_permissions.administrator:
+                await interaction.response.send_message(
+                    "Only a server admin can set the leadership role.", ephemeral=True
+                )
+                return
+        elif not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can change settings.", ephemeral=True
+            )
+            return
+        label, key, kind = CONFIG_SETTINGS[value_key]
+        word = "channel" if kind == "channel" else "role"
+        await interaction.response.send_message(
+            f"Pick the {word} for **{label}** (or Clear it):",
+            view=_SettingEditView(value_key),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Refresh",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+        custom_id="settings:refresh",
+        row=1,
+    )
+    async def refresh(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        store = guild_store(DATA, interaction.guild_id)
+        await interaction.response.edit_message(
+            embed=_settings_embed(interaction.guild, store), view=self
+        )
+
+
+SETTINGS_PANEL_VIEW = SettingsPanelView()
 
 
 # ---- /role_menu ------------------------------------------------------------- #
@@ -1936,8 +1978,8 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed = discord.Embed(
         title="🐉  Tenshi — Command Guide",
         description=(
-            "**New here? Just run `/setup` — it builds and wires up everything.**\n"
-            "Change any single setting later with `/config`."
+            "**New here? Just run `/setup` — it builds everything and opens a "
+            "settings panel with dropdowns.**"
         ),
         color=EMBED_COLOR,
     )
@@ -1992,9 +2034,9 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="⚙️  Setup",
         value=(
-            "`/setup` — one-command setup (builds everything) ⭐\n"
-            "`/config view` — see all settings\n"
-            "`/config set` — change any one channel or role"
+            "`/setup` — builds everything **and** opens the settings panel ⭐\n"
+            "Change any channel or role right from the dropdown in that panel\n"
+            "(no more typing commands for settings)"
         ),
         inline=False,
     )
@@ -3012,8 +3054,8 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
     warnings = []
     if lead is None:
         warnings.append(
-            "No **leadership role** found — admins already have access; set one with "
-            "`/config set` → Leadership role if you want non-admins to run staff commands."
+            "No **leadership role** found — admins already have access; set one from "
+            "the dropdown below (Leadership role) to let non-admins run staff commands."
         )
     if not me.guild_permissions.manage_channels:
         warnings.append("Give me **Manage Channels** so I can create channels.")
@@ -3023,8 +3065,12 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
         embed.add_field(
             name="⚠️ Heads up", value="\n".join(f"• {w}" for w in warnings), inline=False
         )
-    embed.set_footer(text="See everything anytime with /config view")
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    embed.set_footer(text="Use the dropdown below to change any setting")
+    await interaction.followup.send(
+        embeds=[embed, _settings_embed(guild, store)],
+        view=SETTINGS_PANEL_VIEW,
+        ephemeral=True,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -3033,7 +3079,6 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
 
 bot.tree.add_command(roster_group)
 bot.tree.add_command(kos_group)
-bot.tree.add_command(config_group)
 bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
 bot.tree.add_command(ticket_group)
@@ -3067,6 +3112,7 @@ async def on_ready() -> None:
     bot.add_view(ORDER_TICKET_VIEW)
     bot.add_view(MUSTER_VIEW)
     bot.add_view(ROSTER_REFRESH_VIEW)
+    bot.add_view(SETTINGS_PANEL_VIEW)
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))
