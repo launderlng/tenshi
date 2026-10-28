@@ -1890,6 +1890,30 @@ async def _close_ticket(
             except discord.HTTPException:
                 pass  # customer has DMs closed — nothing we can do
 
+    # DM the staff member who closed it a copy too
+    try:
+        staff_dm = discord.Embed(
+            title=f"🔒  You closed {ttype} #{oid}",
+            description=(
+                f"Ticket **#{oid}** in **{guild.name}** is closed."
+                + (
+                    f"\n**Customer:** <@{order['user_id']}>"
+                    f"\n**Paid:** {'🟢 Yes' if order.get('paid') else '🔴 No'}"
+                    if order
+                    else ""
+                )
+            ),
+            color=EMBED_COLOR,
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        staff_dm.set_footer(text="Transcript attached.")
+        await interaction.user.send(
+            embed=staff_dm,
+            file=discord.File(io.BytesIO(transcript.encode("utf-8")), filename=fname),
+        )
+    except discord.HTTPException:
+        pass  # closer has DMs closed
+
     if order is not None:
         order["status"] = "closed"
         save_data(DATA)
