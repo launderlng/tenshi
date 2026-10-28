@@ -929,6 +929,72 @@ async def roster_rank_list(interaction: discord.Interaction) -> None:
 
 
 @roster_group.command(
+    name="import_roles",
+    description="Add every server role as a rank in one go (leadership only)",
+)
+async def roster_import_roles(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can import roles.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    ranks = store["ranks"]
+    existing_ids = {r["role_id"] for r in ranks}
+    existing_names = {r["name"].lower() for r in ranks}
+
+    # highest roles first; skip @everyone and bot/integration/booster roles
+    candidates = [
+        role
+        for role in sorted(
+            interaction.guild.roles, key=lambda r: r.position, reverse=True
+        )
+        if not role.is_default() and not role.managed
+    ]
+
+    added, skipped = [], 0
+    capped = False
+    for role in candidates:
+        if len(ranks) >= 25:
+            capped = True
+            break
+        if role.id in existing_ids:
+            continue
+        name = role.name.strip()
+        if name.lower() in existing_names:
+            skipped += 1
+            continue
+        ranks.append({"name": name, "role_id": role.id})
+        existing_ids.add(role.id)
+        existing_names.add(name.lower())
+        added.append(role.mention)
+    save_data(DATA)
+
+    lines = []
+    if added:
+        lines.append(
+            f"✅ Imported **{len(added)}** role(s) as ranks: {', '.join(added)}"
+        )
+    else:
+        lines.append("Nothing new to import — every role is already a rank.")
+    if capped:
+        lines.append(
+            "⚠️ Hit the 25-rank cap (Discord embeds max out at 25 groups). "
+            "Trim with `/roster rank_remove` if you need different ones."
+        )
+    lines.append("Now run `/roster view` to see everyone grouped by rank.")
+    await interaction.response.send_message("\n".join(lines)[:2000], ephemeral=True)
+    if added:
+        await send_log(
+            interaction.guild,
+            store,
+            f"🎖️ {interaction.user.mention} imported **{len(added)}** role(s) as ranks.",
+            category="roster",
+            actor=interaction.user,
+        )
+
+
+@roster_group.command(
     name="view",
     description="Show the roster, built live from your rank roles",
 )
@@ -1879,7 +1945,8 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="🎯  Roster",
         value=(
             "`/roster view` — live from your rank roles, with 🔄 refresh\n"
-            "`/roster rank_set <name> <role>` — map a rank to a role\n"
+            "`/roster import_roles` — add every server role as a rank ⭐\n"
+            "`/roster rank_set <name> <role>` — map one rank to a role\n"
             "`/roster rank_list` · `rank_remove`\n"
             "`/roster add` · `remove` · `reset` — manual list"
         ),
