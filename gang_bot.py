@@ -681,6 +681,95 @@ def _roster_embed(entries: list[dict[str, Any]]) -> discord.Embed:
     return embed
 
 
+def _live_roster_embed(
+    guild: discord.Guild, store: dict[str, Any]
+) -> discord.Embed:
+    """Build the roster straight from the rank roles and who currently holds them."""
+    embed = discord.Embed(
+        title="🎯  Gang Roster",
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    ranks = store.get("ranks", [])
+    counted: set[int] = set()
+    rank_role_ids: set[int] = set()
+
+    # resolve rank → role, drop deleted roles, order by role position (top first)
+    resolved = []
+    for r in ranks:
+        role = guild.get_role(r["role_id"])
+        if role is None:
+            continue
+        resolved.append((r["name"], role))
+        rank_role_ids.add(role.id)
+    resolved.sort(key=lambda nr: nr[1].position, reverse=True)
+
+    for name, role in resolved:
+        members = role.members
+        for m in members:
+            counted.add(m.id)
+        if members:
+            shown = members[:40]
+            value = " ".join(m.mention for m in shown)
+            if len(members) > len(shown):
+                value += f"\n*+{len(members) - len(shown)} more*"
+        else:
+            value = "*nobody*"
+        embed.add_field(
+            name=f"{name} · {len(members)}", value=value[:1024], inline=False
+        )
+
+    # anyone with the default roster role but none of the rank roles
+    base = _roster_role(guild, store)
+    if base is not None:
+        extras = [
+            m
+            for m in base.members
+            if m.id not in counted
+            and not any(rr.id in rank_role_ids for rr in m.roles)
+        ]
+        for m in extras:
+            counted.add(m.id)
+        if extras:
+            shown = extras[:40]
+            value = " ".join(m.mention for m in shown)
+            if len(extras) > len(shown):
+                value += f"\n*+{len(extras) - len(shown)} more*"
+            embed.add_field(
+                name=f"Unranked · {len(extras)}", value=value[:1024], inline=False
+            )
+
+    if not embed.fields:
+        embed.description = (
+            "No ranks mapped yet.\nMap a rank to a server role with "
+            "`/roster rank_set <name> <role>` and everyone in that role shows up here."
+        )
+    embed.set_footer(text=f"👥 {len(counted)} total · tap 🔄 to refresh")
+    return embed
+
+
+class RosterRefreshView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Refresh",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔄",
+        custom_id="roster:refresh",
+    )
+    async def refresh(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        store = guild_store(DATA, interaction.guild_id)
+        await interaction.response.edit_message(
+            embed=_live_roster_embed(interaction.guild, store), view=self
+        )
+
+
+ROSTER_REFRESH_VIEW = RosterRefreshView()
+
+
 def _dedupe_members(members: list[discord.Member | None]) -> list[discord.Member]:
     """Drop None entries and duplicate members, preserving order."""
     seen: set[int] = set()
@@ -839,11 +928,14 @@ async def roster_rank_list(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@roster_group.command(name="view", description="Show the current gang roster")
+@roster_group.command(
+    name="view",
+    description="Show the roster, built live from your rank roles",
+)
 async def roster_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    embed = _roster_embed(store["roster"])
-    await interaction.response.send_message(embed=embed)
+    embed = _live_roster_embed(interaction.guild, store)
+    await interaction.response.send_message(embed=embed, view=ROSTER_REFRESH_VIEW)
 
 
 @roster_group.command(
@@ -1786,9 +1878,10 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="🎯  Roster",
         value=(
-            "`/roster view` · `/roster add @members [rank]`\n"
-            "`/roster remove @member` · `/roster reset`\n"
-            "`/roster rank_set` · `rank_list` · `rank_remove`"
+            "`/roster view` — live from your rank roles, with 🔄 refresh\n"
+            "`/roster rank_set <name> <role>` — map a rank to a role\n"
+            "`/roster rank_list` · `rank_remove`\n"
+            "`/roster add` · `remove` · `reset` — manual list"
         ),
         inline=False,
     )
@@ -2906,6 +2999,7 @@ async def on_ready() -> None:
     bot.add_view(TICKET_PANEL_VIEW)
     bot.add_view(ORDER_TICKET_VIEW)
     bot.add_view(MUSTER_VIEW)
+    bot.add_view(ROSTER_REFRESH_VIEW)
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))
