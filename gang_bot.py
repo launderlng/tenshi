@@ -1777,7 +1777,10 @@ class EOIPromptView(discord.ui.View):
 async def gang_help(interaction: discord.Interaction) -> None:
     embed = discord.Embed(
         title="🐉  Tenshi — Command Guide",
-        description="New here? Run **`/setup`** first. Most settings live under `/config`.",
+        description=(
+            "**New here? Just run `/setup` — it builds and wires up everything.**\n"
+            "Change any single setting later with `/config`."
+        ),
         color=EMBED_COLOR,
     )
     embed.add_field(
@@ -1793,7 +1796,8 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="💀  KOS",
         value=(
             "`/kos view` · `/kos add @members [reason]`\n"
-            "`/kos remove @member` · `/kos reset`"
+            "`/kos remove @member` · `/kos reset`\n"
+            "`/kos roster <text>` — post a roster with a ✅ sign-up button"
         ),
         inline=False,
     )
@@ -1828,10 +1832,9 @@ async def gang_help(interaction: discord.Interaction) -> None:
     embed.add_field(
         name="⚙️  Setup",
         value=(
-            "`/setup` — guided one-command setup ⭐\n"
-            "`/config set` — channels & roles (logs, EOI, transcript, "
-            "leadership, roster/KOS/radio roles)\n"
-            "`/config view` — see all settings"
+            "`/setup` — one-command setup (builds everything) ⭐\n"
+            "`/config view` — see all settings\n"
+            "`/config set` — change any one channel or role"
         ),
         inline=False,
     )
@@ -2701,7 +2704,7 @@ async def close_ticket_cmd(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(
     name="setup",
-    description="Guided setup — creates log/ticket channels and shows what's left (leadership)",
+    description="One-command setup — builds every channel, role and category and wires it all (leadership)",
 )
 async def setup_cmd(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -2720,16 +2723,40 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
     if lead is None:
         lead = discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
 
-    created: list[str] = []
+    made_roles: list[str] = []
+    made_channels: list[str] = []
+
+    # ---- roles (KOS + Roster), only if not already set ---------------------- #
+    if me.guild_permissions.manage_roles:
+        role_defs = [
+            ("KOS", "kos_role_id", discord.Colour(0xE11D48)),
+            ("Roster", "roster_role_id", discord.Colour(0x5865F2)),
+        ]
+        for rname, key, colour in role_defs:
+            if not store.get(key):
+                try:
+                    r = await guild.create_role(
+                        name=rname,
+                        colour=colour,
+                        hoist=True,
+                        mentionable=True,
+                        reason="Tenshi setup",
+                    )
+                    store[key] = r.id
+                    made_roles.append(r.mention)
+                except discord.HTTPException:
+                    pass
+
+    # ---- channels + categories --------------------------------------------- #
     if me.guild_permissions.manage_channels:
-        overwrites = {
+        staff_ow = {
             guild.default_role: discord.PermissionOverwrite(view_channel=False),
             me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         }
         if lead is not None:
-            overwrites[lead] = discord.PermissionOverwrite(view_channel=True)
+            staff_ow[lead] = discord.PermissionOverwrite(view_channel=True)
 
-        # only create the log channels that aren't already set
+        # staff-only log channels, grouped under one category
         log_defs = [
             ("gang-logs", "log_channel_id"),
             ("roster-logs", "roster_log_channel_id"),
@@ -2745,60 +2772,98 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
         if needed:
             try:
                 log_cat = await guild.create_category(
-                    "📁 Logs", overwrites=overwrites, reason="Gang setup"
+                    "📁 Tenshi Logs", overwrites=staff_ow, reason="Tenshi setup"
                 )
                 for name, key in needed:
                     ch = await guild.create_text_channel(
-                        name, category=log_cat, overwrites=overwrites, reason="Gang setup"
+                        name, category=log_cat, overwrites=staff_ow, reason="Tenshi setup"
                     )
                     store[key] = ch.id
-                created.append(f"{len(needed)} log channels")
+                made_channels.append(f"{len(needed)} log channels")
             except discord.HTTPException:
                 pass
 
-        # a default Tickets category, if none set yet
+        # community channels — public ones, plus staff-only ones
+        community = [
+            ("welcome", "welcome_channel_id", None),
+            ("applications", "eoi_channel_id", None),
+            ("transcripts", "transcript_channel_id", staff_ow),
+            ("staff-chat", "staff_channel_id", staff_ow),
+        ]
+        for name, key, ow in community:
+            if not store.get(key):
+                try:
+                    ch = await guild.create_text_channel(
+                        name, overwrites=ow, reason="Tenshi setup"
+                    )
+                    store[key] = ch.id
+                    made_channels.append(ch.mention)
+                except discord.HTTPException:
+                    pass
+
+        # Tickets category
         if not store.get("ticket_category_id"):
             try:
-                tcat = await guild.create_category("🎫 Tickets", reason="Gang setup")
+                tcat = await guild.create_category("🎫 Tickets", reason="Tenshi setup")
                 store["ticket_category_id"] = tcat.id
-                created.append("Tickets category")
+                made_channels.append("🎫 Tickets category")
             except discord.HTTPException:
                 pass
 
     save_data(DATA)
 
-    def mark(ok: Any) -> str:
-        return "✅" if ok else "⬜"
-
-    checklist = [
-        f"{mark(store.get('leadership_role_id') or lead)} **Leadership role** — "
-        "`/config set leadership_role`",
-        f"{mark(store.get('log_channel_id'))} **Log channels** — created by setup",
-        f"{mark(store.get('ticket_category_id'))} **Tickets category** — "
-        "`/ticket set_category`",
-        f"{mark(store.get('ticket_types'))} **Ticket types** — `/ticket type_add` "
-        "→ `/ticket panel`",
-        f"{mark(store.get('transcript_channel_id'))} **Transcript channel** — "
-        "`/config set transcript_channel`",
-        f"{mark(store.get('eoi_channel_id'))} **EOI channel** — `/config set eoi_channel` "
-        "→ `/eoi_post`",
-        f"{mark(store.get('roster_role_id'))} **Roster default role** — "
-        "`/config set roster_role`",
-    ]
     embed = discord.Embed(
-        title="🛠️  Gang Bot Setup",
-        description="\n".join(checklist),
+        title="🛠️  Tenshi — Setup Complete",
+        description="Everything's built and wired up. Just **two** things left for you.",
         color=EMBED_COLOR,
     )
-    if created:
-        embed.add_field(name="✨ Just created", value=", ".join(created), inline=False)
-    if not me.guild_permissions.manage_channels:
+    if made_channels:
         embed.add_field(
-            name="⚠️ Heads up",
-            value="Give me **Manage Channels** so I can create the channels for you.",
+            name="✨ Channels created", value=", ".join(made_channels), inline=False
+        )
+    if made_roles:
+        embed.add_field(
+            name="✨ Roles created", value=", ".join(made_roles), inline=False
+        )
+    if not made_channels and not made_roles:
+        embed.add_field(
+            name="✅ Already set up",
+            value="Nothing new to create — everything was already configured.",
             inline=False,
         )
-    embed.set_footer(text="⬜ = still to do · check anytime with /config view")
+    embed.add_field(
+        name="1️⃣  Drag my role up",
+        value=(
+            "In **Server Settings → Roles**, drag **Tenshi** *above* the "
+            "**KOS** and **Roster** roles so I can hand them out."
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="2️⃣  Post your panels",
+        value=(
+            "`/eoi_post` — Apply button · `/radio panel` — radio reroll\n"
+            "`/role_menu add` then `/role_menu post` — self-serve roles\n"
+            "`/ticket type_add` then `/ticket panel` — order tickets"
+        ),
+        inline=False,
+    )
+
+    warnings = []
+    if lead is None:
+        warnings.append(
+            "No **leadership role** found — admins already have access; set one with "
+            "`/config set` → Leadership role if you want non-admins to run staff commands."
+        )
+    if not me.guild_permissions.manage_channels:
+        warnings.append("Give me **Manage Channels** so I can create channels.")
+    if not me.guild_permissions.manage_roles:
+        warnings.append("Give me **Manage Roles** so I can create + hand out roles.")
+    if warnings:
+        embed.add_field(
+            name="⚠️ Heads up", value="\n".join(f"• {w}" for w in warnings), inline=False
+        )
+    embed.set_footer(text="See everything anytime with /config view")
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
