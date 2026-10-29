@@ -197,6 +197,19 @@ def is_leadership(member: discord.Member) -> bool:
     return any(r.name == LEADERSHIP_ROLE_NAME for r in member.roles)
 
 
+def _leadership_role(
+    guild: discord.Guild, store: dict[str, Any]
+) -> discord.Role | None:
+    """The leadership role: the one set in the settings panel, else one named
+    LEADERSHIP_ROLE_NAME. Used to grant staff access to ticket channels."""
+    rid = store.get("leadership_role_id")
+    if rid:
+        role = guild.get_role(rid)
+        if role is not None:
+            return role
+    return discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
+
+
 def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -2178,30 +2191,6 @@ async def _close_ticket(
             except discord.HTTPException:
                 pass  # customer has DMs closed — nothing we can do
 
-    # DM the staff member who closed it a copy too
-    try:
-        staff_dm = discord.Embed(
-            title=f"🔒  You closed {ttype} #{oid}",
-            description=(
-                f"Ticket **#{oid}** in **{guild.name}** is closed."
-                + (
-                    f"\n**Customer:** <@{order['user_id']}>"
-                    f"\n**Paid:** {'🟢 Yes' if order.get('paid') else '🔴 No'}"
-                    if order
-                    else ""
-                )
-            ),
-            color=EMBED_COLOR,
-            timestamp=datetime.datetime.now(datetime.timezone.utc),
-        )
-        staff_dm.set_footer(text="Transcript attached.")
-        await interaction.user.send(
-            embed=staff_dm,
-            file=discord.File(io.BytesIO(transcript.encode("utf-8")), filename=fname),
-        )
-    except discord.HTTPException:
-        pass  # closer has DMs closed
-
     if order is not None:
         order["status"] = "closed"
         save_data(DATA)
@@ -2310,7 +2299,7 @@ class OrderModal(discord.ui.Modal):
             ),
             me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
         }
-        lead = discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
+        lead = _leadership_role(guild, store)
         if lead is not None:
             overwrites[lead] = discord.PermissionOverwrite(
                 view_channel=True, send_messages=True
@@ -2545,9 +2534,17 @@ class OrderTicketView(discord.ui.View):
                 "Only staff can close orders.", ephemeral=True
             )
             return
-        await interaction.response.defer()
         store = guild_store(DATA, interaction.guild_id)
         order = _find_order_by_channel(store, interaction.channel_id)
+        if order is not None and order.get("status") == "closed":
+            await interaction.response.send_message(
+                "This ticket is already closing.", ephemeral=True
+            )
+            return
+        if order is not None:
+            order["status"] = "closed"  # claim it now so a double-click can't re-fire
+            save_data(DATA)
+        await interaction.response.defer()
         await interaction.followup.send(
             "Closing — transcript saved, channel will delete shortly. 🔒",
             ephemeral=True,
@@ -2848,6 +2845,13 @@ async def close_ticket_cmd(interaction: discord.Interaction) -> None:
             "This isn't a ticket channel.", ephemeral=True
         )
         return
+    if order.get("status") == "closed":
+        await interaction.response.send_message(
+            "This ticket is already closing.", ephemeral=True
+        )
+        return
+    order["status"] = "closed"  # claim it so a second /close can't re-fire
+    save_data(DATA)
     await interaction.response.send_message(
         "Closing — transcript saved, channel will delete shortly. 🔒", ephemeral=True
     )
@@ -2869,11 +2873,7 @@ async def setup_cmd(interaction: discord.Interaction) -> None:
     me = guild.me
     store = guild_store(DATA, interaction.guild_id)
 
-    lead = None
-    if store.get("leadership_role_id"):
-        lead = guild.get_role(store["leadership_role_id"])
-    if lead is None:
-        lead = discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
+    lead = _leadership_role(guild, store)
 
     made_roles: list[str] = []
     made_channels: list[str] = []
