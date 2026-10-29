@@ -3053,6 +3053,11 @@ async def on_ready() -> None:
         log.error("Command sync failed: %s", exc)
     log.info("Logged in as %s (id: %s)", bot.user, bot.user.id)
     log.info(
+        "discord.py %s · Components V2 available: %s",
+        discord.__version__,
+        hasattr(discord.ui, "LayoutView"),
+    )
+    log.info(
         "In %d guild(s): %s",
         len(bot.guilds),
         ", ".join(f"{g.name} ({g.id})" for g in bot.guilds) or "none",
