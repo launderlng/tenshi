@@ -48,7 +48,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 ### Settings
 | Command | What it does | Who |
 |---|---|---|
-| `/settings` | Opens the settings panel: a dropdown of every channel/role setting. Pick a setting → choose the channel or role with a native picker (or Clear it). 🔄 refreshes the current values | Leadership |
+| `/settings` | With no options, shows all current channel/role settings. With `setting:<name>` plus a `channel:` or `role:`, sets that one (leave the channel/role empty to clear it). Uses Discord's native pickers | Leadership |
 | `/gang_help` | List all commands | Everyone |
 
 ## Setup
