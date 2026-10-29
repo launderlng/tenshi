@@ -1299,7 +1299,7 @@ def _muster_embed(text: str, attendees: list[int]) -> discord.Embed:
     else:
         lst = "*Nobody yet — tap the button below.*"
     embed.add_field(name=f"✅ On roster · {len(attendees)}", value=lst[:1024], inline=False)
-    embed.set_footer(text="Tap ✅ to mark yourself in · tap again to drop out")
+    embed.set_footer(text="Tap to join the roster · tap again to drop off")
     return embed
 
 
@@ -1308,7 +1308,7 @@ class MusterView(discord.ui.View):
         super().__init__(timeout=None)
 
     @discord.ui.button(
-        label="I can come",
+        label="Join the KOS roster",
         style=discord.ButtonStyle.success,
         emoji="✅",
         custom_id="kos:muster",
@@ -1331,10 +1331,10 @@ class MusterView(discord.ui.View):
         uid = interaction.user.id
         if uid in rec["attendees"]:
             rec["attendees"].remove(uid)
-            note = "You're marked as **out**."
+            note = "You've been **taken off** the KOS roster."
         else:
             rec["attendees"].append(uid)
-            note = "You're marked as **in**. ✅"
+            note = "You're **on** the KOS roster. ✅"
         save_data(DATA)
         await interaction.response.edit_message(
             embed=_muster_embed(rec["text"], rec["attendees"]), view=self
@@ -1349,25 +1349,43 @@ MUSTER_VIEW = MusterView()
 
 
 @kos_group.command(
-    name="roster",
-    description="Post a KOS roster with a tick button for who can come (leadership)",
+    name="start",
+    description="Start a KOS roster — posts a join-embed in a channel (leadership)",
 )
-@app_commands.describe(text="What the roster post should say")
-async def kos_roster(interaction: discord.Interaction, text: str) -> None:
+@app_commands.describe(
+    text="What the roster post should say",
+    channel="Channel to post it in (defaults to here)",
+)
+async def kos_start(
+    interaction: discord.Interaction,
+    text: str,
+    channel: discord.TextChannel | None = None,
+) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
-            "Only leadership can post a roster.", ephemeral=True
+            "Only leadership can start a roster.", ephemeral=True
         )
         return
+    target = channel or interaction.channel
     store = guild_store(DATA, interaction.guild_id)
-    await interaction.response.send_message(embed=_muster_embed(text, []), view=MUSTER_VIEW)
-    msg = await interaction.original_response()
+    try:
+        msg = await target.send(embed=_muster_embed(text, []), view=MUSTER_VIEW)
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            f"I can't post in {target.mention} — check my permissions there.",
+            ephemeral=True,
+        )
+        return
     store["kos_musters"][str(msg.id)] = {"text": text, "attendees": []}
     save_data(DATA)
+    await interaction.response.send_message(
+        f"KOS roster started in {target.mention} — members can tap **Join** to sign on. ✅",
+        ephemeral=True,
+    )
     await send_log(
         interaction.guild,
         store,
-        f"🎯 {interaction.user.mention} posted a KOS call-out.",
+        f"🎯 {interaction.user.mention} started a KOS roster in {target.mention}.",
         category="kos",
         actor=interaction.user,
     )
@@ -1962,7 +1980,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
         value=(
             "`/kos view` · `/kos add @members [reason]`\n"
             "`/kos remove @member` · `/kos reset`\n"
-            "`/kos roster <text>` — post a roster with a ✅ sign-up button"
+            "`/kos start <text> [channel]` — post a join-embed; members tap ✅ to sign on"
         ),
         inline=False,
     )
