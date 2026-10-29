@@ -159,6 +159,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("welcome_channel_id", None)
     g.setdefault("staff_channel_id", None)
     g.setdefault("kos_musters", {})
+    g.setdefault("kos_proposals", {})
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
     g.setdefault("tickets_open", True)
@@ -1284,12 +1285,19 @@ async def kos_reset(interaction: discord.Interaction) -> None:
     )
 
 
-# ---- /kos callout (embed + tick button for "I can make the KOS") ------------ #
+# ---- /kos start → party sign-up → draw → staff verify → approve ------------- #
 
 
-def _muster_embed(text: str, attendees: list[int]) -> discord.Embed:
+def _member_name(guild: discord.Guild, uid: int) -> str:
+    m = guild.get_member(uid)
+    return m.display_name if m else str(uid)
+
+
+def _muster_embed(
+    text: str, attendees: list[int], size: int, drawn: bool = False
+) -> discord.Embed:
     embed = discord.Embed(
-        title="🎯  KOS Roster",
+        title="🎯  KOS Roster — Sign-up",
         description=text or "*No details given.*",
         color=EMBED_COLOR,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
@@ -1297,9 +1305,14 @@ def _muster_embed(text: str, attendees: list[int]) -> discord.Embed:
     if attendees:
         lst = "\n".join(f"`{i:>2}` <@{uid}>" for i, uid in enumerate(attendees, 1))
     else:
-        lst = "*Nobody yet — tap the button below.*"
-    embed.add_field(name=f"✅ On roster · {len(attendees)}", value=lst[:1024], inline=False)
-    embed.set_footer(text="Tap to join the roster · tap again to drop off")
+        lst = "*Nobody yet — tap **Join** below.*"
+    embed.add_field(name=f"✅ In the pool · {len(attendees)}", value=lst[:1024], inline=False)
+    if drawn:
+        embed.set_footer(text="Drawn — pending leadership approval in the staff channel")
+    else:
+        embed.set_footer(
+            text=f"Tap to join · tap again to leave · {size} will be drawn"
+        )
     return embed
 
 
@@ -1317,48 +1330,417 @@ class MusterView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         store = guild_store(DATA, interaction.guild_id)
-        musters = store["kos_musters"]
         key = str(interaction.message.id)
-        rec = musters.get(key)
+        rec = store["kos_musters"].get(key)
         if rec is None:
-            desc = (
-                interaction.message.embeds[0].description
-                if interaction.message.embeds
-                else ""
-            )
-            rec = {"text": desc or "", "attendees": []}
-            musters[key] = rec
+            rec = {"text": "", "attendees": [], "size": 0, "channel_id": interaction.channel_id}
+            store["kos_musters"][key] = rec
         uid = interaction.user.id
         if uid in rec["attendees"]:
             rec["attendees"].remove(uid)
-            note = "You've been **taken off** the KOS roster."
+            note = "You've **left** the pool."
         else:
             rec["attendees"].append(uid)
-            note = "You're **on** the KOS roster. ✅"
+            note = "You're **in** the pool. ✅"
         save_data(DATA)
         await interaction.response.edit_message(
-            embed=_muster_embed(rec["text"], rec["attendees"]), view=self
+            embed=_muster_embed(
+                rec["text"], rec["attendees"], rec.get("size", 0), rec.get("drawn", False)
+            ),
+            view=self,
         )
         try:
             await interaction.followup.send(note, ephemeral=True)
         except discord.HTTPException:
             pass
 
+    @discord.ui.button(
+        label="Draw",
+        style=discord.ButtonStyle.primary,
+        emoji="🎲",
+        custom_id="kos:draw",
+    )
+    async def draw(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can draw the roster.", ephemeral=True
+            )
+            return
+        store = guild_store(DATA, interaction.guild_id)
+        key = str(interaction.message.id)
+        rec = store["kos_musters"].get(key)
+        if not rec or not rec.get("attendees"):
+            await interaction.response.send_message(
+                "Nobody has joined the pool yet.", ephemeral=True
+            )
+            return
+        staff = (
+            interaction.guild.get_channel(store["staff_channel_id"])
+            if store.get("staff_channel_id")
+            else None
+        )
+        if staff is None:
+            await interaction.response.send_message(
+                "Set a **Staff channel** first in the `/setup` settings panel — "
+                "that's where the draw goes for approval.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        pool = list(rec["attendees"])
+        size = rec.get("size") or len(pool)
+        random.shuffle(pool)
+        roster = pool[:size]
+        bench = pool[size:]
+        prop = {
+            "text": rec.get("text", ""),
+            "roster": roster,
+            "bench": bench,
+            "size": size,
+            "announce_channel_id": rec.get("channel_id") or interaction.channel_id,
+            "staff_channel_id": staff.id,
+            "status": "pending",
+        }
+        pmsg = await staff.send(
+            content="🎲 **New KOS roster to approve** — leadership, review & approve.",
+            embed=_proposal_embed(interaction.guild, prop),
+            view=RosterProposalView(),
+        )
+        store["kos_proposals"][str(pmsg.id)] = prop
+        rec["drawn"] = True
+        save_data(DATA)
+        try:
+            await interaction.message.edit(
+                embed=_muster_embed(rec["text"], rec["attendees"], size, drawn=True),
+                view=self,
+            )
+        except discord.HTTPException:
+            pass
+        await interaction.followup.send(
+            f"Drawn **{len(roster)}** from {len(pool)} — sent to {staff.mention} "
+            "for approval. ✅",
+            ephemeral=True,
+        )
+
 
 MUSTER_VIEW = MusterView()
 
 
+# ---- staff verification / approval ----------------------------------------- #
+
+def _proposal_embed(guild: discord.Guild, prop: dict[str, Any]) -> discord.Embed:
+    approved = prop.get("status") == "approved"
+    embed = discord.Embed(
+        title="💀  KOS Roster — Approved" if approved else "🗳️  KOS Roster — Approve",
+        description=prop.get("text") or "*No details.*",
+        color=0x22C55E if approved else EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    roster = prop.get("roster", [])
+    if roster:
+        rlist = "\n".join(
+            f"`{i:>2}` <@{uid}>" for i, uid in enumerate(roster, 1)
+        )
+    else:
+        rlist = "*empty*"
+    embed.add_field(
+        name=f"🎯 Roster · {len(roster)}/{prop.get('size', len(roster))}",
+        value=rlist[:1024],
+        inline=False,
+    )
+    bench = prop.get("bench", [])
+    if bench and not approved:
+        blist = ", ".join(f"<@{uid}>" for uid in bench[:30])
+        embed.add_field(name=f"🪑 Bench · {len(bench)}", value=blist[:1024], inline=False)
+    embed.set_footer(
+        text="Approved ✅" if approved
+        else "Remove / Add / Reshuffle, then Approve (leadership)"
+    )
+    return embed
+
+
+async def _refresh_proposal(
+    guild: discord.Guild, store: dict[str, Any], key: str
+) -> None:
+    prop = store["kos_proposals"].get(key)
+    if not prop:
+        return
+    ch = guild.get_channel(prop["staff_channel_id"])
+    if ch is None:
+        return
+    try:
+        msg = await ch.fetch_message(int(key))
+        await msg.edit(embed=_proposal_embed(guild, prop), view=RosterProposalView())
+    except discord.HTTPException:
+        pass
+
+
+def _member_options(guild: discord.Guild, ids: list[int]) -> list[discord.SelectOption]:
+    opts = [
+        discord.SelectOption(label=_member_name(guild, uid)[:100], value=str(uid))
+        for uid in ids[:25]
+    ]
+    return opts or [discord.SelectOption(label="—", value="0")]
+
+
+class _ProposalRemoveSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, key: str, roster: list[int]) -> None:
+        self.key = key
+        super().__init__(
+            placeholder="Pick someone to remove…",
+            options=_member_options(guild, roster),
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        store = guild_store(DATA, interaction.guild_id)
+        prop = store["kos_proposals"].get(self.key)
+        if not prop:
+            await interaction.response.send_message("Proposal expired.", ephemeral=True)
+            return
+        uid = int(self.values[0])
+        if uid in prop["roster"]:
+            prop["roster"].remove(uid)
+            if uid not in prop["bench"]:
+                prop["bench"].insert(0, uid)
+            save_data(DATA)
+        await _refresh_proposal(interaction.guild, store, self.key)
+        await interaction.response.send_message(
+            f"Removed <@{uid}> from the roster.", ephemeral=True
+        )
+
+
+class _ProposalAddSelect(discord.ui.Select):
+    def __init__(self, guild: discord.Guild, key: str, bench: list[int]) -> None:
+        self.key = key
+        super().__init__(
+            placeholder="Pick someone to add…",
+            options=_member_options(guild, bench),
+            min_values=1,
+            max_values=1,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        store = guild_store(DATA, interaction.guild_id)
+        prop = store["kos_proposals"].get(self.key)
+        if not prop:
+            await interaction.response.send_message("Proposal expired.", ephemeral=True)
+            return
+        uid = int(self.values[0])
+        if uid in prop["bench"]:
+            prop["bench"].remove(uid)
+            if uid not in prop["roster"]:
+                prop["roster"].append(uid)
+            save_data(DATA)
+        await _refresh_proposal(interaction.guild, store, self.key)
+        await interaction.response.send_message(
+            f"Added <@{uid}> to the roster.", ephemeral=True
+        )
+
+
+class _SubSelectView(discord.ui.View):
+    def __init__(self, item: discord.ui.Select) -> None:
+        super().__init__(timeout=120)
+        self.add_item(item)
+
+
+class RosterProposalView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    def _get(self, interaction: discord.Interaction):
+        store = guild_store(DATA, interaction.guild_id)
+        return store, store["kos_proposals"].get(str(interaction.message.id))
+
+    @discord.ui.button(
+        label="Approve", style=discord.ButtonStyle.success, emoji="✅",
+        custom_id="kosprop:approve", row=0,
+    )
+    async def approve(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can approve.", ephemeral=True
+            )
+            return
+        store, prop = self._get(interaction)
+        if not prop:
+            await interaction.response.send_message("Proposal expired.", ephemeral=True)
+            return
+        if prop.get("status") == "approved":
+            await interaction.response.send_message(
+                "Already approved.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        guild = interaction.guild
+        prop["status"] = "approved"
+        role = _kos_role(guild, store)
+        for uid in prop["roster"]:
+            mem = guild.get_member(uid)
+            if mem is None:
+                try:
+                    mem = await guild.fetch_member(uid)
+                except (discord.NotFound, discord.HTTPException):
+                    mem = None
+            if role is not None and mem is not None:
+                try:
+                    await mem.add_roles(role, reason=f"KOS roster by {interaction.user}")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+            if not any(k.get("id") == uid for k in store["kos"]):
+                store["kos"].append(
+                    {
+                        "id": uid,
+                        "name": _member_name(guild, uid),
+                        "note": "roster",
+                        "added_by": str(interaction.user),
+                        "at": now_stamp(),
+                    }
+                )
+        save_data(DATA)
+
+        # final announcement in the sign-up channel, pinging the KOS role
+        announce = guild.get_channel(prop["announce_channel_id"])
+        final = discord.Embed(
+            title="💀  KOS Roster",
+            description=prop.get("text") or "",
+            color=0xDC2626,
+            timestamp=datetime.datetime.now(datetime.timezone.utc),
+        )
+        final.add_field(
+            name=f"On the roster · {len(prop['roster'])}",
+            value="\n".join(f"`{i:>2}` <@{u}>" for i, u in enumerate(prop["roster"], 1))
+            or "*empty*",
+            inline=False,
+        )
+        final.set_footer(text=f"Approved by {interaction.user}")
+        if announce is not None:
+            content = role.mention if role is not None else None
+            try:
+                await announce.send(
+                    content=content,
+                    embed=final,
+                    allowed_mentions=discord.AllowedMentions(roles=True),
+                )
+            except discord.HTTPException:
+                pass
+
+        await interaction.message.edit(
+            embed=_proposal_embed(guild, prop), view=None
+        )
+        await interaction.followup.send(
+            f"✅ Approved — posted to {announce.mention if announce else 'the channel'} "
+            f"and gave **{len(prop['roster'])}** the KOS role.",
+            ephemeral=True,
+        )
+        await send_log(
+            guild, store,
+            f"💀 {interaction.user.mention} approved a KOS roster "
+            f"({len(prop['roster'])} members).",
+            category="kos", actor=interaction.user,
+        )
+
+    @discord.ui.button(
+        label="Reshuffle", style=discord.ButtonStyle.secondary, emoji="🔀",
+        custom_id="kosprop:reshuffle", row=0,
+    )
+    async def reshuffle(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can reshuffle.", ephemeral=True
+            )
+            return
+        store, prop = self._get(interaction)
+        if not prop or prop.get("status") == "approved":
+            await interaction.response.send_message(
+                "Nothing to reshuffle.", ephemeral=True
+            )
+            return
+        pool = prop["roster"] + prop["bench"]
+        random.shuffle(pool)
+        size = prop.get("size") or len(pool)
+        prop["roster"] = pool[:size]
+        prop["bench"] = pool[size:]
+        save_data(DATA)
+        await interaction.response.edit_message(
+            embed=_proposal_embed(interaction.guild, prop), view=self
+        )
+
+    @discord.ui.button(
+        label="Remove", style=discord.ButtonStyle.danger, emoji="➖",
+        custom_id="kosprop:remove", row=1,
+    )
+    async def remove(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can edit the roster.", ephemeral=True
+            )
+            return
+        store, prop = self._get(interaction)
+        if not prop or not prop.get("roster") or prop.get("status") == "approved":
+            await interaction.response.send_message(
+                "Nothing to remove.", ephemeral=True
+            )
+            return
+        key = str(interaction.message.id)
+        await interaction.response.send_message(
+            "Who should come off the roster?",
+            view=_SubSelectView(_ProposalRemoveSelect(interaction.guild, key, prop["roster"])),
+            ephemeral=True,
+        )
+
+    @discord.ui.button(
+        label="Add", style=discord.ButtonStyle.secondary, emoji="➕",
+        custom_id="kosprop:add", row=1,
+    )
+    async def add(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can edit the roster.", ephemeral=True
+            )
+            return
+        store, prop = self._get(interaction)
+        if not prop or not prop.get("bench") or prop.get("status") == "approved":
+            await interaction.response.send_message(
+                "Nobody on the bench to add.", ephemeral=True
+            )
+            return
+        key = str(interaction.message.id)
+        await interaction.response.send_message(
+            "Who should go onto the roster?",
+            view=_SubSelectView(_ProposalAddSelect(interaction.guild, key, prop["bench"])),
+            ephemeral=True,
+        )
+
+
+ROSTER_PROPOSAL_VIEW = RosterProposalView()
+
+
 @kos_group.command(
     name="start",
-    description="Start a KOS roster — posts a join-embed in a channel (leadership)",
+    description="Start a KOS roster sign-up; leadership draws & approves (leadership)",
 )
 @app_commands.describe(
-    text="What the roster post should say",
-    channel="Channel to post it in (defaults to here)",
+    text="What the sign-up post should say",
+    size="How many to draw onto the roster",
+    channel="Channel to post the sign-up in (defaults to here)",
 )
 async def kos_start(
     interaction: discord.Interaction,
     text: str,
+    size: int,
     channel: discord.TextChannel | None = None,
 ) -> None:
     if not is_leadership(interaction.user):
@@ -1366,26 +1748,37 @@ async def kos_start(
             "Only leadership can start a roster.", ephemeral=True
         )
         return
+    if size < 1:
+        await interaction.response.send_message(
+            "Size must be at least 1.", ephemeral=True
+        )
+        return
     target = channel or interaction.channel
     store = guild_store(DATA, interaction.guild_id)
     try:
-        msg = await target.send(embed=_muster_embed(text, []), view=MUSTER_VIEW)
+        msg = await target.send(embed=_muster_embed(text, [], size), view=MUSTER_VIEW)
     except discord.Forbidden:
         await interaction.response.send_message(
             f"I can't post in {target.mention} — check my permissions there.",
             ephemeral=True,
         )
         return
-    store["kos_musters"][str(msg.id)] = {"text": text, "attendees": []}
+    store["kos_musters"][str(msg.id)] = {
+        "text": text,
+        "attendees": [],
+        "size": size,
+        "channel_id": target.id,
+    }
     save_data(DATA)
     await interaction.response.send_message(
-        f"KOS roster started in {target.mention} — members can tap **Join** to sign on. ✅",
+        f"KOS sign-up started in {target.mention} — members tap **Join**, then hit "
+        f"**🎲 Draw** to pick {size} and send them to your staff channel for approval. ✅",
         ephemeral=True,
     )
     await send_log(
         interaction.guild,
         store,
-        f"🎯 {interaction.user.mention} started a KOS roster in {target.mention}.",
+        f"🎯 {interaction.user.mention} started a KOS roster sign-up in {target.mention}.",
         category="kos",
         actor=interaction.user,
     )
@@ -1980,7 +2373,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
         value=(
             "`/kos view` · `/kos add @members [reason]`\n"
             "`/kos remove @member` · `/kos reset`\n"
-            "`/kos start <text> [channel]` — post a join-embed; members tap ✅ to sign on"
+            "`/kos start <text> <size> [channel]` — sign-up → 🎲 draw → staff approve → post"
         ),
         inline=False,
     )
@@ -3062,6 +3455,7 @@ async def on_ready() -> None:
     bot.add_view(TICKET_PANEL_VIEW)
     bot.add_view(ORDER_TICKET_VIEW)
     bot.add_view(MUSTER_VIEW)
+    bot.add_view(ROSTER_PROPOSAL_VIEW)
     bot.add_view(ROSTER_REFRESH_VIEW)
     bot.add_view(SETTINGS_PANEL_VIEW)
     try:

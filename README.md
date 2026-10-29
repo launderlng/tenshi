@@ -24,7 +24,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | `/kos add @member [more] [reason]` | Add up to 30 to KOS (pick one + paste the rest) and give the KOS role | Everyone |
 | `/kos remove @member` | Remove and take the role back | Everyone |
 | `/kos reset` | Wipe the list (keeps roles) | Leadership |
-| `/kos start <text> [channel]` | Start a KOS roster: posts a join-embed in the chosen channel (or here); members tap the ✅ **Join the KOS roster** button to sign on (tap again to drop off), and the embed lists who's on | Leadership |
+| `/kos start <text> <size> [channel]` | Start a KOS roster sign-up: posts a join-embed (members tap ✅ **Join** to enter the pool). Leadership then taps **🎲 Draw** to randomly pick `size` and send them to the **staff channel** for approval, where leadership can Remove / Add / Reshuffle and **Approve**. On approval it posts the final roster to the sign-up channel, pings and assigns the **KOS role** | Leadership |
 
 ### Tickets / Orders
 | Command | What it does | Who |
