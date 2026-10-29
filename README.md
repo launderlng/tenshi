@@ -24,7 +24,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | `/kos add @member [more] [reason]` | Add up to 30 to KOS (pick one + paste the rest) and give the KOS role | Everyone |
 | `/kos remove @member` | Remove and take the role back | Everyone |
 | `/kos reset` | Wipe the list (keeps roles) | Leadership |
-| `/kos roster <text>` | Post a KOS roster embed with your text and a ✅ button; members tap to mark themselves on (tap again to drop off), and the embed lists who's on | Leadership |
+| `/kos start <text> [channel]` | Start a KOS roster: posts a join-embed in the chosen channel (or here); members tap the ✅ **Join the KOS roster** button to sign on (tap again to drop off), and the embed lists who's on | Leadership |
 
 ### Tickets / Orders
 | Command | What it does | Who |
