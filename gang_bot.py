@@ -184,6 +184,34 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 DATA = load_data()
 
 
+class LoggedView(discord.ui.View):
+    """A View whose component errors never show as a silent 'didn't respond in
+    time': they're logged and the user gets a clear ephemeral message."""
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        log.exception(
+            "Component error (%s): %s",
+            getattr(item, "custom_id", type(item).__name__),
+            error,
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "⚠️ Something went wrong handling that — try again.", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "⚠️ Something went wrong handling that — try again.", ephemeral=True
+                )
+        except discord.HTTPException:
+            pass
+
+
 def is_leadership(member: discord.Member) -> bool:
     """True if the member is a server admin or has the configured leadership role.
 
@@ -1310,7 +1338,7 @@ def _muster_embed(text: str, attendees: list[int], size: int) -> discord.Embed:
     return embed
 
 
-class MusterView(discord.ui.View):
+class MusterView(LoggedView):
     """Public sign-up — just the Join button."""
 
     def __init__(self) -> None:
@@ -1364,7 +1392,7 @@ def _draw_control_embed(target: discord.abc.GuildChannel, size: int) -> discord.
     )
 
 
-class StaffDrawView(discord.ui.View):
+class StaffDrawView(LoggedView):
     """Leaders-chat control — the Draw button."""
 
     def __init__(self) -> None:
@@ -1546,7 +1574,7 @@ class _SubSelectView(discord.ui.View):
         self.add_item(item)
 
 
-class RosterProposalView(discord.ui.View):
+class RosterProposalView(LoggedView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -1964,7 +1992,7 @@ def _settings_embed(guild: discord.Guild, store: dict[str, Any]) -> discord.Embe
     return embed
 
 
-class SettingsPanelView(discord.ui.View):
+class SettingsPanelView(LoggedView):
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -2855,13 +2883,13 @@ class TicketPanelSelect(discord.ui.Select):
         await interaction.response.send_modal(OrderModal(chosen))
 
 
-class TicketPanelView(discord.ui.View):
+class TicketPanelView(LoggedView):
     def __init__(self, options: list[discord.SelectOption] | None = None) -> None:
         super().__init__(timeout=None)
         self.add_item(TicketPanelSelect(options))
 
 
-class OrderTicketView(discord.ui.View):
+class OrderTicketView(LoggedView):
     """Staff buttons on a ticket: Claim, Mark Paid and Close."""
 
     def __init__(self) -> None:
@@ -3318,6 +3346,16 @@ bot.tree.add_command(kos_group)
 bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
 bot.tree.add_command(ticket_group)
+
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction) -> None:
+    # slim trace: confirm component clicks arrive and with what custom_id
+    if interaction.type == discord.InteractionType.component:
+        data = interaction.data or {}
+        log.info(
+            "component: custom_id=%s user=%s", data.get("custom_id"), interaction.user
+        )
 
 
 @bot.event
