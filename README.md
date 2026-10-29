@@ -5,7 +5,7 @@ Expression-of-Interest (EOI) application system with Yes/No voting.
 
 ## Commands
 
-All setup lives under `/config`. Staff commands need the leadership role or admin.
+All channel/role settings live in `/settings`. Staff commands need the leadership role or admin.
 
 ### Roster
 | Command | What it does | Who |
@@ -24,7 +24,7 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | `/kos add @member [more] [reason]` | Add up to 30 to KOS (pick one + paste the rest) and give the KOS role | Everyone |
 | `/kos remove @member` | Remove and take the role back | Everyone |
 | `/kos reset` | Wipe the list (keeps roles) | Leadership |
-| `/kos start <text> <size> [channel]` | Start a KOS roster sign-up: posts a join-embed (members tap ✅ **Join** to enter the pool) and a **🎲 Draw** control in the staff channel. Leadership taps Draw there to randomly pick `size`, then Remove / Add / Reshuffle and **Approve**. On approval it posts the final roster to the sign-up channel, pings and assigns the **KOS role** (needs the staff channel set) | Leadership |
+| `/kos start <text> <size> [channel] [draw_channel]` | Start a KOS roster sign-up: posts a join-embed (members tap ✅ **Join** to enter the pool) and a **🎲 Draw** control for leadership. The Draw control goes to `draw_channel`, else your staff channel, else the current channel. Leadership taps Draw to randomly pick `size`, then Remove / Add / Reshuffle and **Approve** — which posts the final roster to the sign-up channel and pings + assigns the **KOS role** | Leadership |
 
 ### Tickets / Orders
 | Command | What it does | Who |
@@ -45,10 +45,10 @@ All setup lives under `/config`. Staff commands need the leadership role or admi
 | `/radio new` / `view` / `panel` | Roll a new frequency / show it / post a reroll button | Leadership / Everyone |
 | `/role_menu add` / `remove` / `list` / `post` | Manage & post a self-serve role dropdown | Leadership |
 
-### Setup (`/config`)
+### Settings
 | Command | What it does | Who |
 |---|---|---|
-| `/setup` | One-command setup: creates the KOS & Roster roles, all log channels, welcome/applications/transcripts/staff channels and a Tickets category, wires every setting, then opens a **settings panel** with a dropdown to change any channel or role | Leadership |
+| `/settings` | Opens the settings panel: a dropdown of every channel/role setting. Pick a setting → choose the channel or role with a native picker (or Clear it). 🔄 refreshes the current values | Leadership |
 | `/gang_help` | List all commands | Everyone |
 
 ## Setup
