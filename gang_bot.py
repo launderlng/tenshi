@@ -159,6 +159,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("welcome_channel_id", None)
     g.setdefault("staff_channel_id", None)
     g.setdefault("kos_musters", {})
+    g.setdefault("kos_draws", {})
     g.setdefault("kos_proposals", {})
     g.setdefault("orders", [])
     g.setdefault("next_order_id", 1)
@@ -1293,11 +1294,9 @@ def _member_name(guild: discord.Guild, uid: int) -> str:
     return m.display_name if m else str(uid)
 
 
-def _muster_embed(
-    text: str, attendees: list[int], size: int, drawn: bool = False
-) -> discord.Embed:
+def _muster_embed(text: str, attendees: list[int], size: int) -> discord.Embed:
     embed = discord.Embed(
-        title="🎯  KOS Roster — Sign-up",
+        title="🎯  KOS Roster",
         description=text or "*No details given.*",
         color=EMBED_COLOR,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
@@ -1307,16 +1306,13 @@ def _muster_embed(
     else:
         lst = "*Nobody yet — tap **Join** below.*"
     embed.add_field(name=f"✅ In the pool · {len(attendees)}", value=lst[:1024], inline=False)
-    if drawn:
-        embed.set_footer(text="Drawn — pending leadership approval in the staff channel")
-    else:
-        embed.set_footer(
-            text=f"Tap to join · tap again to leave · {size} will be drawn"
-        )
+    embed.set_footer(text=f"Tap to join · tap again to leave · {size} will be drawn")
     return embed
 
 
 class MusterView(discord.ui.View):
+    """Public sign-up — just the Join button."""
+
     def __init__(self) -> None:
         super().__init__(timeout=None)
 
@@ -1344,9 +1340,7 @@ class MusterView(discord.ui.View):
             note = "You're **in** the pool. ✅"
         save_data(DATA)
         await interaction.response.edit_message(
-            embed=_muster_embed(
-                rec["text"], rec["attendees"], rec.get("size", 0), rec.get("drawn", False)
-            ),
+            embed=_muster_embed(rec["text"], rec["attendees"], rec.get("size", 0)),
             view=self,
         )
         try:
@@ -1354,8 +1348,30 @@ class MusterView(discord.ui.View):
         except discord.HTTPException:
             pass
 
+
+MUSTER_VIEW = MusterView()
+
+
+def _draw_control_embed(target: discord.abc.GuildChannel, size: int) -> discord.Embed:
+    return discord.Embed(
+        title="🎲  KOS Roster — Draw",
+        description=(
+            f"Sign-up is live in {target.mention}.\n"
+            f"When enough have joined, tap **Draw** to randomly pick **{size}** "
+            "and review them here before they go on the roster."
+        ),
+        color=EMBED_COLOR,
+    )
+
+
+class StaffDrawView(discord.ui.View):
+    """Leaders-chat control — the Draw button."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
     @discord.ui.button(
-        label="Draw",
+        label="Draw roster",
         style=discord.ButtonStyle.primary,
         emoji="🎲",
         custom_id="kos:draw",
@@ -1369,23 +1385,16 @@ class MusterView(discord.ui.View):
             )
             return
         store = guild_store(DATA, interaction.guild_id)
-        key = str(interaction.message.id)
-        rec = store["kos_musters"].get(key)
+        link = store["kos_draws"].get(str(interaction.message.id))
+        if not link:
+            await interaction.response.send_message(
+                "This draw control isn't linked to a sign-up anymore.", ephemeral=True
+            )
+            return
+        rec = store["kos_musters"].get(link["signup_msg_id"])
         if not rec or not rec.get("attendees"):
             await interaction.response.send_message(
                 "Nobody has joined the pool yet.", ephemeral=True
-            )
-            return
-        staff = (
-            interaction.guild.get_channel(store["staff_channel_id"])
-            if store.get("staff_channel_id")
-            else None
-        )
-        if staff is None:
-            await interaction.response.send_message(
-                "Set a **Staff channel** first in the `/setup` settings panel — "
-                "that's where the draw goes for approval.",
-                ephemeral=True,
             )
             return
         await interaction.response.defer(ephemeral=True)
@@ -1393,40 +1402,29 @@ class MusterView(discord.ui.View):
         pool = list(rec["attendees"])
         size = rec.get("size") or len(pool)
         random.shuffle(pool)
-        roster = pool[:size]
-        bench = pool[size:]
         prop = {
             "text": rec.get("text", ""),
-            "roster": roster,
-            "bench": bench,
+            "roster": pool[:size],
+            "bench": pool[size:],
             "size": size,
-            "announce_channel_id": rec.get("channel_id") or interaction.channel_id,
-            "staff_channel_id": staff.id,
+            "announce_channel_id": link["signup_channel_id"],
+            "staff_channel_id": interaction.channel_id,
             "status": "pending",
         }
-        pmsg = await staff.send(
+        pmsg = await interaction.channel.send(
             content="🎲 **New KOS roster to approve** — leadership, review & approve.",
             embed=_proposal_embed(interaction.guild, prop),
             view=RosterProposalView(),
         )
         store["kos_proposals"][str(pmsg.id)] = prop
-        rec["drawn"] = True
         save_data(DATA)
-        try:
-            await interaction.message.edit(
-                embed=_muster_embed(rec["text"], rec["attendees"], size, drawn=True),
-                view=self,
-            )
-        except discord.HTTPException:
-            pass
         await interaction.followup.send(
-            f"Drawn **{len(roster)}** from {len(pool)} — sent to {staff.mention} "
-            "for approval. ✅",
+            f"Drawn **{len(prop['roster'])}** from {len(pool)} — approve it below. ✅",
             ephemeral=True,
         )
 
 
-MUSTER_VIEW = MusterView()
+STAFF_DRAW_VIEW = StaffDrawView()
 
 
 # ---- staff verification / approval ----------------------------------------- #
@@ -1753,8 +1751,20 @@ async def kos_start(
             "Size must be at least 1.", ephemeral=True
         )
         return
-    target = channel or interaction.channel
     store = guild_store(DATA, interaction.guild_id)
+    staff = (
+        interaction.guild.get_channel(store["staff_channel_id"])
+        if store.get("staff_channel_id")
+        else None
+    )
+    if staff is None:
+        await interaction.response.send_message(
+            "Set a **Staff channel** first in the `/setup` settings panel — the "
+            "**Draw** control is posted there for leadership.",
+            ephemeral=True,
+        )
+        return
+    target = channel or interaction.channel
     try:
         msg = await target.send(embed=_muster_embed(text, [], size), view=MUSTER_VIEW)
     except discord.Forbidden:
@@ -1769,10 +1779,26 @@ async def kos_start(
         "size": size,
         "channel_id": target.id,
     }
+    try:
+        control = await staff.send(
+            embed=_draw_control_embed(target, size), view=STAFF_DRAW_VIEW
+        )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            f"Posted the sign-up, but I can't post the Draw control in {staff.mention} "
+            "— check my permissions there.",
+            ephemeral=True,
+        )
+        save_data(DATA)
+        return
+    store["kos_draws"][str(control.id)] = {
+        "signup_msg_id": str(msg.id),
+        "signup_channel_id": target.id,
+    }
     save_data(DATA)
     await interaction.response.send_message(
-        f"KOS sign-up started in {target.mention} — members tap **Join**, then hit "
-        f"**🎲 Draw** to pick {size} and send them to your staff channel for approval. ✅",
+        f"Sign-up posted in {target.mention}; the **Draw** control is in "
+        f"{staff.mention} for leadership. ✅",
         ephemeral=True,
     )
     await send_log(
@@ -2373,7 +2399,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
         value=(
             "`/kos view` · `/kos add @members [reason]`\n"
             "`/kos remove @member` · `/kos reset`\n"
-            "`/kos start <text> <size> [channel]` — sign-up → 🎲 draw → staff approve → post"
+            "`/kos start <text> <size> [channel]` — sign-up here, 🎲 Draw in staff chat → approve → post"
         ),
         inline=False,
     )
@@ -3455,6 +3481,7 @@ async def on_ready() -> None:
     bot.add_view(TICKET_PANEL_VIEW)
     bot.add_view(ORDER_TICKET_VIEW)
     bot.add_view(MUSTER_VIEW)
+    bot.add_view(STAFF_DRAW_VIEW)
     bot.add_view(ROSTER_PROPOSAL_VIEW)
     bot.add_view(ROSTER_REFRESH_VIEW)
     bot.add_view(SETTINGS_PANEL_VIEW)
