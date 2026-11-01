@@ -24,7 +24,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `/kos add @member [more] [reason]` | Add up to 30 to KOS (pick one + paste the rest) and give the KOS role | Everyone |
 | `/kos remove @member` | Remove and take the role back | Everyone |
 | `/kos reset` | Wipe the list (keeps roles) | Leadership |
-| `/kos start <text> <size> [channel] [draw_channel]` | Start a KOS roster sign-up: posts a join-embed (members tap ✅ **Join** to enter the pool) and a **🎲 Draw** control for leadership. The Draw control goes to `draw_channel`, else your staff channel, else the current channel. Leadership taps Draw to randomly pick `size`, then Remove / Add / Reshuffle and **Approve** — which posts the final roster to the sign-up channel and pings + assigns the **KOS role** | Leadership |
+| `/kos start <text> <size> [channel] [draw_channel] [roster_channel] [ping_role]` | Posts the KOS sign-up in `channel` (your KOS announcements), pinging `ping_role`. A **🎲 Draw** control goes to `draw_channel` (else staff channel, else here). Draw randomly picks `size`, pings the role, and lets leadership Remove / Add / Reshuffle in that same chat, then **Approve** — which posts the final roster to KOS announcements **and** `roster_channel`, pinging and assigning the **KOS role** | Leadership |
 
 ### Tickets / Orders
 | Command | What it does | Who |

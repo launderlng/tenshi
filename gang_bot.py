@@ -963,7 +963,7 @@ async def roster_import_roles(interaction: discord.Interaction) -> None:
 async def roster_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
     embed = _live_roster_embed(interaction.guild, store)
-    await interaction.response.send_message(embed=embed, view=ROSTER_REFRESH_VIEW)
+    await interaction.response.send_message(embed=embed, view=RosterRefreshView())
 
 
 @roster_group.command(
@@ -1408,13 +1408,21 @@ class StaffDrawView(discord.ui.View):
             "bench": pool[size:],
             "size": size,
             "announce_channel_id": link["signup_channel_id"],
+            "roster_channel_id": link.get("roster_channel_id"),
             "staff_channel_id": interaction.channel_id,
             "status": "pending",
         }
+        role = (
+            interaction.guild.get_role(link["ping_role_id"])
+            if link.get("ping_role_id")
+            else None
+        )
+        head = "🎲 **KOS draw is ready** — pick the members, then approve."
         pmsg = await interaction.channel.send(
-            content="🎲 **New KOS roster to approve** — leadership, review & approve.",
+            content=f"{role.mention} {head}" if role else head,
             embed=_proposal_embed(interaction.guild, prop),
             view=RosterProposalView(),
+            allowed_mentions=discord.AllowedMentions(roles=True),
         )
         store["kos_proposals"][str(pmsg.id)] = prop
         save_data(DATA)
@@ -1603,8 +1611,7 @@ class RosterProposalView(discord.ui.View):
                 )
         save_data(DATA)
 
-        # final announcement in the sign-up channel, pinging the KOS role
-        announce = guild.get_channel(prop["announce_channel_id"])
+        # final roster post, pinging the KOS role
         final = discord.Embed(
             title="💀  KOS Roster",
             description=prop.get("text") or "",
@@ -1618,14 +1625,23 @@ class RosterProposalView(discord.ui.View):
             inline=False,
         )
         final.set_footer(text=f"Approved by {interaction.user}")
-        if announce is not None:
-            content = role.mention if role is not None else None
+
+        # post to KOS announcements and the KOS roster channel (once each)
+        targets = []
+        for cid in (prop.get("announce_channel_id"), prop.get("roster_channel_id")):
+            ch = guild.get_channel(cid) if cid else None
+            if ch is not None and ch not in targets:
+                targets.append(ch)
+        content = role.mention if role is not None else None
+        posted = []
+        for ch in targets:
             try:
-                await announce.send(
+                await ch.send(
                     content=content,
                     embed=final,
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
+                posted.append(ch.mention)
             except discord.HTTPException:
                 pass
 
@@ -1633,7 +1649,7 @@ class RosterProposalView(discord.ui.View):
             embed=_proposal_embed(guild, prop), view=None
         )
         await interaction.followup.send(
-            f"✅ Approved — posted to {announce.mention if announce else 'the channel'} "
+            f"✅ Approved — posted to {', '.join(posted) or 'nowhere (check my permissions)'} "
             f"and gave **{len(prop['roster'])}** the KOS role.",
             ephemeral=True,
         )
@@ -1733,8 +1749,10 @@ ROSTER_PROPOSAL_VIEW = RosterProposalView()
 @app_commands.describe(
     text="What the sign-up post should say",
     size="How many to draw onto the roster",
-    channel="Channel to post the sign-up in (defaults to here)",
-    draw_channel="Where leadership's Draw control goes (defaults to your staff channel, else here)",
+    channel="KOS announcements — where the sign-up & final roster post (defaults to here)",
+    draw_channel="Where the Draw & member picking happens (defaults to staff channel, else here)",
+    roster_channel="KOS roster channel — the approved roster is also posted here",
+    ping_role="Role to ping when the sign-up starts and when the draw is ready",
 )
 async def kos_start(
     interaction: discord.Interaction,
@@ -1742,6 +1760,8 @@ async def kos_start(
     size: int,
     channel: discord.TextChannel | None = None,
     draw_channel: discord.TextChannel | None = None,
+    roster_channel: discord.TextChannel | None = None,
+    ping_role: discord.Role | None = None,
 ) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
@@ -1762,8 +1782,16 @@ async def kos_start(
     if staff is None:
         staff = interaction.channel
     target = channel or interaction.channel
+    ping = ping_role.mention if ping_role else None
+    pings = discord.AllowedMentions(roles=True)
     try:
-        msg = await target.send(embed=_muster_embed(text, [], size), view=MUSTER_VIEW)
+        # fresh view instance per message — sharing the registered one breaks clicks
+        msg = await target.send(
+            content=ping,
+            embed=_muster_embed(text, [], size),
+            view=MusterView(),
+            allowed_mentions=pings,
+        )
     except discord.Forbidden:
         await interaction.response.send_message(
             f"I can't post in {target.mention} — check my permissions there.",
@@ -1778,7 +1806,7 @@ async def kos_start(
     }
     try:
         control = await staff.send(
-            embed=_draw_control_embed(target, size), view=STAFF_DRAW_VIEW
+            embed=_draw_control_embed(target, size), view=StaffDrawView()
         )
     except discord.Forbidden:
         await interaction.response.send_message(
@@ -1791,6 +1819,8 @@ async def kos_start(
     store["kos_draws"][str(control.id)] = {
         "signup_msg_id": str(msg.id),
         "signup_channel_id": target.id,
+        "roster_channel_id": roster_channel.id if roster_channel else None,
+        "ping_role_id": ping_role.id if ping_role else None,
     }
     save_data(DATA)
     await interaction.response.send_message(
@@ -2268,7 +2298,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
         value=(
             "`/kos view` · `/kos add @members [reason]`\n"
             "`/kos remove @member` · `/kos reset`\n"
-            "`/kos start <text> <size>` — sign-up, then 🎲 Draw → approve → post"
+            "`/kos start` — sign-up (pings a role) → 🎲 Draw → pick members → approve → posts to announcements + roster"
         ),
         inline=False,
     )
