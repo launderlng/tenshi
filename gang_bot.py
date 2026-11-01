@@ -2725,6 +2725,20 @@ class TicketPanelSelect(discord.ui.Select):
                 "That ticket type no longer exists.", ephemeral=True
             )
             return
+        # one open ticket per member per type — send them to the existing one
+        for o in store["orders"]:
+            if (
+                o.get("user_id") == interaction.user.id
+                and o.get("type") == chosen
+                and o.get("status", "open") != "closed"
+            ):
+                ch = interaction.guild.get_channel(o.get("channel_id") or 0)
+                if ch is not None:
+                    await interaction.response.send_message(
+                        f"You already have an open **{chosen}** ticket: {ch.mention}",
+                        ephemeral=True,
+                    )
+                    return
         await interaction.response.send_modal(OrderModal(chosen))
 
 
@@ -2835,13 +2849,14 @@ class OrderTicketView(discord.ui.View):
     async def close_order(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only staff can close orders.", ephemeral=True
-            )
-            return
         store = guild_store(DATA, interaction.guild_id)
         order = _find_order_by_channel(store, interaction.channel_id)
+        is_owner = order is not None and order.get("user_id") == interaction.user.id
+        if not (is_leadership(interaction.user) or is_owner):
+            await interaction.response.send_message(
+                "Only staff or the ticket owner can close this.", ephemeral=True
+            )
+            return
         if order is not None and order.get("status") == "closed":
             await interaction.response.send_message(
                 "This ticket is already closing.", ephemeral=True
@@ -3136,19 +3151,19 @@ async def ticket_board(interaction: discord.Interaction) -> None:
 
 
 @bot.tree.command(
-    name="close", description="Close the ticket you're in (staff)"
+    name="close", description="Close the ticket you're in (staff or ticket owner)"
 )
 async def close_ticket_cmd(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only staff can close tickets.", ephemeral=True
-        )
-        return
     store = guild_store(DATA, interaction.guild_id)
     order = _find_order_by_channel(store, interaction.channel_id)
     if order is None:
         await interaction.response.send_message(
             "This isn't a ticket channel.", ephemeral=True
+        )
+        return
+    if not (is_leadership(interaction.user) or order.get("user_id") == interaction.user.id):
+        await interaction.response.send_message(
+            "Only staff or the ticket owner can close this.", ephemeral=True
         )
         return
     if order.get("status") == "closed":
@@ -3249,8 +3264,8 @@ bot.tree.add_command(radio_group)
 bot.tree.add_command(ticket_group)
 
 
-@bot.event
-async def on_interaction(interaction: discord.Interaction) -> None:
+@bot.listen("on_interaction")
+async def _trace_interaction(interaction: discord.Interaction) -> None:
     # slim trace: confirm component clicks arrive and with what custom_id
     if interaction.type == discord.InteractionType.component:
         data = interaction.data or {}
