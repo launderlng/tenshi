@@ -1262,25 +1262,54 @@ async def kos_remove(
 
 @kos_group.command(
     name="reset",
-    description="Wipe the KOS list (keeps everyone's role) (leadership only)",
+    description="Full KOS roster reset — clears the list and takes the KOS role off everyone (leadership)",
 )
 async def kos_reset(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message(
-            "Only leadership can reset the KOS list.", ephemeral=True
+            "Only leadership can reset the KOS roster.", ephemeral=True
         )
         return
+    await interaction.response.defer()
+    guild = interaction.guild
     store = guild_store(DATA, interaction.guild_id)
     count = len(store["kos"])
+
+    # take the KOS role off everyone who has it (list members + anyone holding it)
+    role = _kos_role(guild, store)
+    removed, failed = 0, 0
+    if role is not None:
+        holders = {m.id: m for m in role.members}
+        for e in store["kos"]:
+            if e.get("id") and e["id"] not in holders:
+                mem = guild.get_member(e["id"])
+                if mem is not None and role in mem.roles:
+                    holders[mem.id] = mem
+        for mem in holders.values():
+            try:
+                await mem.remove_roles(role, reason=f"KOS reset by {interaction.user}")
+                removed += 1
+            except (discord.Forbidden, discord.HTTPException):
+                failed += 1
+
+    # clear the roster + any open sign-ups/draws; saved channels (kos_defaults) stay
     store["kos"] = []
+    store["kos_musters"] = {}
+    store["kos_draws"] = {}
+    store["kos_proposals"] = {}
     save_data(DATA)
-    await interaction.response.send_message(
-        f"KOS list wiped — {count} entries cleared. Roles left untouched. 🧹"
-    )
+
+    msg = f"💀 KOS roster reset — **{count}** cleared"
+    if role is not None:
+        msg += f", {role.mention} taken off **{removed}** member(s)"
+    msg += ". Your saved KOS channels are kept. 🧹"
+    if failed:
+        msg += f"\n⚠️ Couldn't remove the role from {failed} — check my role is above {role.mention}."
+    await interaction.followup.send(msg, allowed_mentions=discord.AllowedMentions.none())
     await send_log(
-        interaction.guild,
+        guild,
         store,
-        f"{interaction.user.mention} wiped the KOS list ({count} cleared).",
+        f"{interaction.user.mention} reset the KOS roster ({count} cleared, role removed from {removed}).",
         category="kos",
         actor=interaction.user,
     )
@@ -1749,10 +1778,10 @@ ROSTER_PROPOSAL_VIEW = RosterProposalView()
 @app_commands.describe(
     text="What the sign-up post should say",
     size="How many to draw onto the roster",
-    channel="KOS announcements — where the sign-up & final roster post (defaults to here)",
-    draw_channel="Where the Draw & member picking happens (defaults to staff channel, else here)",
-    roster_channel="KOS roster channel — the approved roster is also posted here",
-    ping_role="Role to ping when the sign-up starts and when the draw is ready",
+    channel="KOS announcements — sign-up & final roster (remembered after first use)",
+    draw_channel="Where the Draw & member picking happens (remembered)",
+    roster_channel="KOS roster channel — approved roster also posts here (remembered)",
+    ping_role="Role to ping on sign-up and when the draw is ready (remembered)",
 )
 async def kos_start(
     interaction: discord.Interaction,
@@ -1774,11 +1803,32 @@ async def kos_start(
         )
         return
     store = guild_store(DATA, interaction.guild_id)
-    # Draw control goes to: the channel you pass → your configured staff channel
-    # → the channel you ran this in. Never blocks.
+    guild = interaction.guild
+
+    # Remember what you pick: anything passed now is saved, anything left out
+    # falls back to what you saved last time (survives /kos reset).
+    saved = store.setdefault("kos_defaults", {})
+    for key, val in (
+        ("channel_id", channel),
+        ("draw_channel_id", draw_channel),
+        ("roster_channel_id", roster_channel),
+        ("ping_role_id", ping_role),
+    ):
+        if val is not None:
+            saved[key] = val.id
+    if channel is None and saved.get("channel_id"):
+        channel = guild.get_channel(saved["channel_id"])
+    if draw_channel is None and saved.get("draw_channel_id"):
+        draw_channel = guild.get_channel(saved["draw_channel_id"])
+    if roster_channel is None and saved.get("roster_channel_id"):
+        roster_channel = guild.get_channel(saved["roster_channel_id"])
+    if ping_role is None and saved.get("ping_role_id"):
+        ping_role = guild.get_role(saved["ping_role_id"])
+
+    # Draw control goes to: draw channel → configured staff channel → here.
     staff = draw_channel
     if staff is None and store.get("staff_channel_id"):
-        staff = interaction.guild.get_channel(store["staff_channel_id"])
+        staff = guild.get_channel(store["staff_channel_id"])
     if staff is None:
         staff = interaction.channel
     target = channel or interaction.channel
@@ -2297,7 +2347,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
         name="💀  KOS",
         value=(
             "`/kos view` · `/kos add @members [reason]`\n"
-            "`/kos remove @member` · `/kos reset`\n"
+            "`/kos remove @member` · `/kos reset` — full reset (keeps channels)\n"
             "`/kos start` — sign-up (pings a role) → 🎲 Draw → pick members → approve → posts to announcements + roster"
         ),
         inline=False,
