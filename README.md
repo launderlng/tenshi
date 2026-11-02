@@ -66,6 +66,20 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `/settings` | With no options, shows all current channel/role settings. With `setting:<name>` plus a `channel:` or `role:`, sets that one (leave the channel/role empty to clear it). Uses Discord's native pickers | Leadership |
 | `/gang_help` | List all commands | Everyone |
 
+## Code layout
+
+`gang_bot.py` is the entrypoint (Railway runs `python gang_bot.py`); features live in `tenshi_bot/`:
+
+| File | What's in it |
+|---|---|
+| `core.py` | Config, JSON data store, the bot object, logging, branding + Components V2 helpers, EOI & role-menu views, command groups |
+| `roster.py` | `/roster` — live roster from rank roles |
+| `kos.py` | `/kos` — KOS list and the sign-up → draw → approve flow |
+| `settings.py` | `/settings` |
+| `panels.py` | `/role_menu`, `/radio`, `/eoi`, `/eoi_post`, `/gang_help` |
+| `tickets.py` | Ticket system: panel, tickets, transcripts, ratings, priority, auto-close, stats |
+| `gang.py` | `/gang`, `/strike`, `/bank`, `/war` |
+
 ## Setup
 
 1. Create a bot at <https://discord.com/developers/applications>, copy its **token**.
