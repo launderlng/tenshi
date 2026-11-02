@@ -8,7 +8,7 @@ Run with `python gang_bot.py`. Features live in the tenshi_bot package:
   tenshi_bot/settings.py — /settings — channel & role configuration.
   tenshi_bot/panels.py — /role_menu, /radio, /eoi, /eoi_post and /gang_help.
   tenshi_bot/tickets.py — Ticket / order system: panels, tickets, transcripts, priority, auto-close, stats.
-  tenshi_bot/gang.py — /gang dashboard & profile, /strike, /bank, /war.
+  tenshi_bot/gang.py — /gang dashboard & profile, /strike, /war (live scoreboards).
 """
 
 from tenshi_bot.core import *  # noqa: F401,F403
@@ -30,7 +30,6 @@ bot.tree.add_command(role_menu_group)
 bot.tree.add_command(radio_group)
 bot.tree.add_command(ticket_group)
 bot.tree.add_command(strike_group)
-bot.tree.add_command(bank_group)
 bot.tree.add_command(war_group)
 bot.tree.add_command(gang_group)
 bot.tree.add_command(settings_group)
@@ -61,6 +60,7 @@ async def on_ready() -> None:
     bot.add_view(ROSTER_REFRESH_VIEW)
     bot.add_view(RatingView())
     bot.add_view(DashboardView())
+    bot.add_view(WarPanelView())
     bot.add_view(HelpView())
     if not ticket_autoclose_loop.is_running():
         ticket_autoclose_loop.start()

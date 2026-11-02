@@ -422,8 +422,8 @@ _HELP_PAGES: dict[str, tuple[str, str, str]] = {
              "`/gang dashboard` — live command center with graphs + 🔄 refresh\n"
              "`/gang profile [@member]` — rank, KOS, strikes, tickets\n"
              "`/strike add` · `list` · `remove` · `clear` · `limit`\n"
-             "`/bank deposit` · `withdraw` · `balance` — ledger with trend graph\n"
-             "`/war start` · `result` · `end` · `view` — W/L, win-rate bars, form"),
+             "`/war start <enemy> [first_to]` — live scoreboard; staff tap 🏆 won / 💀 lost each round\n"
+             "`/war view` · `history` · `panel` · `end`"),
     "roster": ("🎯", "Roster",
                "`/roster view` — live from your rank roles, with 🔄 refresh\n"
                "`/roster import_roles` — every server role as a rank ⭐\n"

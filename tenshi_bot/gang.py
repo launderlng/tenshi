@@ -1,4 +1,4 @@
-"""/gang dashboard & profile, /strike, /bank, /war."""
+"""/gang dashboard & profile, /strike, /war (live scoreboards)."""
 
 from .core import *  # noqa: F401,F403
 from .roster import *  # noqa: F401,F403
@@ -9,17 +9,12 @@ from .tickets import *  # noqa: F401,F403
 
 
 # --------------------------------------------------------------------------- #
-# Gang features: strikes · bank · wars · dashboard · member profile
+# Gang features: strikes · wars · dashboard · member profile
 # --------------------------------------------------------------------------- #
 
 strike_group = app_commands.Group(name="strike", description="Warnings / strikes system")
-bank_group = app_commands.Group(name="bank", description="Gang bank ledger")
 war_group = app_commands.Group(name="war", description="Gang war tracker")
 gang_group = app_commands.Group(name="gang", description="Gang dashboard & member profiles")
-
-
-def _money(n: int) -> str:
-    return f"${n:,}"
 
 
 async def _deny(interaction: discord.Interaction, what: str = "do that") -> bool:
@@ -159,139 +154,13 @@ async def strike_limit(interaction: discord.Interaction, limit: app_commands.Ran
     await interaction.response.send_message(f"⚠️ Strike limit set to **{limit}**.", ephemeral=True)
 
 
-# ---- bank ------------------------------------------------------------------- #
+# ---- wars: live scoreboard with staff round buttons ------------------------ #
 
-def _bank_tx(store, kind: str, amount: int, note: str, user_id: int) -> dict:
-    bank = store["bank"]
-    bank["balance"] = bank.get("balance", 0) + (amount if kind == "in" else -amount)
-    tx = {
-        "kind": kind,
-        "amount": amount,
-        "note": note[:200],
-        "by": user_id,
-        "ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
-        "balance": bank["balance"],
-    }
-    bank.setdefault("tx", []).append(tx)
-    bank["tx"] = bank["tx"][-500:]
-    save_data(DATA)
-    return tx
-
-
-async def _bank_move(interaction: discord.Interaction, kind: str, amount: int, note: str) -> None:
-    if await _deny(interaction, "move gang money"):
-        return
-    store = guild_store(DATA, interaction.guild_id)
-    if kind == "out" and amount > store["bank"].get("balance", 0):
-        await interaction.response.send_message(
-            f"Not enough in the bank — balance is **{_money(store['bank'].get('balance', 0))}**.",
-            ephemeral=True,
-        )
-        return
-    tx = _bank_tx(store, kind, amount, note, interaction.user.id)
-    arrow, color, verb = ("📥", 0x22C55E, "Deposit") if kind == "in" else ("📤", 0xDC2626, "Withdrawal")
-    embed = discord.Embed(
-        title=f"{arrow}  {verb} · {_money(amount)}",
-        description=f"**New balance:** {_money(tx['balance'])}",
-        color=color,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
-    embed.add_field(name="Note", value=note or "—", inline=False)
-    embed.add_field(name="By", value=interaction.user.mention, inline=True)
-    _brand(embed, interaction.guild)
-    await interaction.response.send_message(embed=embed)
-    await send_log(
-        interaction.guild, store, f"{arrow} Bank {verb.lower()} **{_money(amount)}** → {_money(tx['balance'])}.",
-        category="orders", actor=interaction.user, fields=[("Note", note or "—", False)],
-    )
-
-
-@bank_group.command(name="deposit", description="Put money into the gang bank (leadership)")
-@app_commands.describe(amount="How much", note="What it's from")
-async def bank_deposit(
-    interaction: discord.Interaction, amount: app_commands.Range[int, 1, 1_000_000_000], note: str = ""
-) -> None:
-    await _bank_move(interaction, "in", amount, note)
-
-
-@bank_group.command(name="withdraw", description="Take money out of the gang bank (leadership)")
-@app_commands.describe(amount="How much", note="What it's for")
-async def bank_withdraw(
-    interaction: discord.Interaction, amount: app_commands.Range[int, 1, 1_000_000_000], note: str = ""
-) -> None:
-    await _bank_move(interaction, "out", amount, note)
-
-
-@bank_group.command(name="balance", description="Show the gang bank balance, trend + recent activity")
-async def bank_balance(interaction: discord.Interaction) -> None:
-    store = guild_store(DATA, interaction.guild_id)
-    bank = store["bank"]
-    all_tx = bank.get("tx", [])
-    txs = all_tx[-10:][::-1]
-    total_in = sum(t["amount"] for t in all_tx if t["kind"] == "in")
-    total_out = sum(t["amount"] for t in all_tx if t["kind"] == "out")
-    flow = total_in + total_out
-    embed = discord.Embed(
-        title="🏦  Gang Bank",
-        description=f"# {_money(bank.get('balance', 0))}",
-        color=0x22C55E,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
-    if all_tx:
-        embed.add_field(
-            name="📈 Balance trend · last 20 moves",
-            value=f"`{_spark([t['balance'] for t in all_tx[-20:]])}`",
-            inline=False,
-        )
-        embed.add_field(
-            name="In vs out",
-            value=(
-                f"📥 `{_bar(total_in, flow)}` {_money(total_in)}\n"
-                f"📤 `{_bar(total_out, flow)}` {_money(total_out)}"
-            ),
-            inline=False,
-        )
-        embed.add_field(
-            name="🧾 Recent",
-            value="\n".join(
-                f"{'📥' if t['kind'] == 'in' else '📤'} **{_money(t['amount'])}** · <t:{t['ts']}:R> · "
-                f"<@{t['by']}>{(' — ' + t['note']) if t['note'] else ''}"
-                for t in txs
-            )[:1024],
-            inline=False,
-        )
-    else:
-        embed.add_field(name="📈 Trend", value="*No transactions yet — `/bank deposit` to start.*", inline=False)
-    _brand(embed, interaction.guild, f"{len(all_tx)} transactions")
-    await _send_v2(interaction, embed)
-
-
-# ---- wars ------------------------------------------------------------------- #
-
-def _war_embed(war: dict) -> discord.Embed:
-    w, l = war.get("wins", 0), war.get("losses", 0)
-    total = w + l
-    pct = f"{(w / total) * 100:.0f}%" if total else "—"
-    active = war.get("active", True)
-    embed = discord.Embed(
-        title=f"⚔️  War vs {war['enemy']}" + ("" if active else " — ended"),
-        color=0xDC2626 if active else 0x6B7280,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
-    embed.add_field(name="🏆 Wins", value=f"**{w}**", inline=True)
-    embed.add_field(name="💀 Losses", value=f"**{l}**", inline=True)
-    embed.add_field(name="📈 Win rate", value=pct, inline=True)
-    embed.add_field(name="Started", value=f"<t:{war['start']}:R>", inline=True)
-    if war.get("log"):
-        embed.add_field(
-            name="Latest",
-            value="\n".join(
-                f"{'🏆' if e['r'] == 'win' else '💀'} <t:{e['ts']}:R>{(' — ' + e['note']) if e.get('note') else ''}"
-                for e in war["log"][-5:][::-1]
-            )[:1024],
-            inline=False,
-        )
-    return embed
+def _war_by_panel(store: dict[str, Any], message_id: int) -> dict | None:
+    for w in store["wars"]:
+        if (w.get("panel") or {}).get("message_id") == message_id:
+            return w
+    return None
 
 
 def _find_war(store, enemy: str, active_only: bool = True) -> dict | None:
@@ -299,6 +168,175 @@ def _find_war(store, enemy: str, active_only: bool = True) -> dict | None:
         if war["enemy"].lower() == enemy.lower() and (war.get("active", True) or not active_only):
             return war
     return None
+
+
+def _war_verdict(war: dict) -> tuple[str, int]:
+    w, l = war.get("wins", 0), war.get("losses", 0)
+    if w > l:
+        return "🏆 VICTORY", 0x22C55E
+    if l > w:
+        return "💀 DEFEAT", 0x6B7280
+    return "🤝 DRAW", 0xF59E0B
+
+
+def _war_card(war: dict, guild: discord.Guild) -> discord.Embed:
+    w, l = war.get("wins", 0), war.get("losses", 0)
+    total = w + l
+    active = war.get("active", True)
+    target = war.get("first_to")
+    if active:
+        status = f"🔴 **LIVE** · round **{total + 1}**" + (f" · first to **{target}**" if target else "")
+        color = 0xDC2626
+    else:
+        verdict, color = _war_verdict(war)
+        status = f"**{verdict}** · ended <t:{war.get('end', war['start'])}:R>"
+    e = discord.Embed(
+        title=f"⚔️  {guild.name}  vs  {war['enemy']}",
+        description=f"# 🏆 {w}  —  {l} 💀\n{status}\n-# started <t:{war['start']}:R>",
+        color=color,
+    )
+    pct = f"{w / total * 100:.0f}%" if total else "—"
+    e.add_field(name="📈 Win rate", value=f"`{_bar(w, total, 16)}` **{pct}**", inline=False)
+    rounds = war.get("log", [])
+    form = "".join("🟩" if x["r"] == "win" else "🟥" for x in rounds[-20:]) or "*No rounds yet*"
+    e.add_field(name=f"🧾 Rounds ({total})", value=form, inline=False)
+    if target and active:
+        e.add_field(
+            name="🎯 First to " + str(target),
+            value=f"🏆 **{max(0, target - w)}** more to win · 💀 **{max(0, target - l)}** from defeat",
+            inline=False,
+        )
+    last = rounds[-1] if rounds else None
+    foot = (
+        f"Last round logged by {last['by_name']}"
+        if last and last.get("by_name")
+        else "Staff: tap a button after each round"
+    )
+    _brand(e, guild, foot)
+    return e
+
+
+def _war_link(guild: discord.Guild, war: dict) -> str:
+    p = war.get("panel") or {}
+    if p.get("channel_id") and p.get("message_id"):
+        return f"https://discord.com/channels/{guild.id}/{p['channel_id']}/{p['message_id']}"
+    return ""
+
+
+async def _post_war_panel(channel, war: dict, guild: discord.Guild) -> None:
+    msg = await _send_card(
+        channel,
+        [_war_card(war, guild)],
+        WarPanelView if war.get("active", True) else None,
+    )
+    if msg is not None:
+        war["panel"] = {"channel_id": msg.channel.id, "message_id": msg.id}
+        save_data(DATA)
+
+
+async def _refresh_war_panel(guild: discord.Guild, war: dict) -> None:
+    """Edit the war's scoreboard wherever it lives (used by /war end)."""
+    p = war.get("panel") or {}
+    ch = guild.get_channel(p.get("channel_id") or 0)
+    if ch is None:
+        return
+    try:
+        msg = await ch.fetch_message(p["message_id"])
+        await _edit_card(
+            msg, [_war_card(war, guild)], WarPanelView if war.get("active", True) else None
+        )
+    except discord.HTTPException:
+        pass
+
+
+async def _announce_war_end(channel, war: dict, guild: discord.Guild, actor=None) -> None:
+    verdict, color = _war_verdict(war)
+    e = discord.Embed(
+        title=f"🏳️  War over — {verdict}",
+        description=f"**{guild.name}** vs **{war['enemy']}** finished **{war['wins']} — {war['losses']}**",
+        color=color,
+    )
+    _brand(e, guild)
+    try:
+        await channel.send(embed=e)
+    except discord.HTTPException:
+        pass
+    await send_log(
+        guild, guild_store(DATA, guild.id),
+        f"🏳️ War vs **{war['enemy']}** ended {war['wins']}–{war['losses']} ({verdict}).",
+        category="kos", actor=actor,
+    )
+
+
+class WarPanelView(discord.ui.View):
+    """Staff buttons on a war scoreboard."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    async def _click(self, interaction: discord.Interaction, action: str) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can update the war score.", ephemeral=True
+            )
+            return
+        store = guild_store(DATA, interaction.guild_id)
+        war = _war_by_panel(store, interaction.message.id)
+        if war is None:
+            await interaction.response.send_message(
+                "This scoreboard isn't linked to a war anymore — use `/war panel`.", ephemeral=True
+            )
+            return
+        if not war.get("active", True):
+            await interaction.response.send_message("This war is already over.", ephemeral=True)
+            return
+        now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        log_ = war.setdefault("log", [])
+        if action in ("win", "loss"):
+            war["wins" if action == "win" else "losses"] += 1
+            log_.append({
+                "r": action, "ts": now,
+                "by": interaction.user.id, "by_name": interaction.user.display_name,
+            })
+            war["log"] = log_[-200:]
+        elif action == "undo":
+            if not log_:
+                await interaction.response.send_message("No rounds to undo.", ephemeral=True)
+                return
+            last = log_.pop()
+            war["wins" if last["r"] == "win" else "losses"] -= 1
+        target = war.get("first_to")
+        ended = action == "end" or (
+            target and (war["wins"] >= target or war["losses"] >= target)
+        )
+        if ended:
+            war["active"] = False
+            war["end"] = now
+        save_data(DATA)
+        await _edit_card(
+            interaction.message,
+            [_war_card(war, interaction.guild)],
+            None if ended else WarPanelView,
+            interaction=interaction,
+        )
+        if ended:
+            await _announce_war_end(interaction.channel, war, interaction.guild, interaction.user)
+
+    @discord.ui.button(label="Round won", style=discord.ButtonStyle.success, emoji="🏆", custom_id="war:win")
+    async def won(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._click(interaction, "win")
+
+    @discord.ui.button(label="Round lost", style=discord.ButtonStyle.danger, emoji="💀", custom_id="war:loss")
+    async def lost(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._click(interaction, "loss")
+
+    @discord.ui.button(label="Undo", style=discord.ButtonStyle.secondary, emoji="↩️", custom_id="war:undo")
+    async def undo(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._click(interaction, "undo")
+
+    @discord.ui.button(label="End war", style=discord.ButtonStyle.secondary, emoji="🏳️", custom_id="war:end")
+    async def end(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await self._click(interaction, "end")
 
 
 async def war_autocomplete(interaction: discord.Interaction, current: str):
@@ -310,14 +348,23 @@ async def war_autocomplete(interaction: discord.Interaction, current: str):
     ][:25]
 
 
-@war_group.command(name="start", description="Start tracking a war (leadership)")
-@app_commands.describe(enemy="Who you're at war with")
-async def war_start(interaction: discord.Interaction, enemy: str) -> None:
+@war_group.command(name="start", description="Start a war and post a live scoreboard (leadership)")
+@app_commands.describe(
+    enemy="Who you're at war with",
+    first_to="Optional: rounds needed to win — the war ends itself when a side gets there",
+)
+async def war_start(
+    interaction: discord.Interaction,
+    enemy: str,
+    first_to: app_commands.Range[int, 1, 100] | None = None,
+) -> None:
     if await _deny(interaction, "start wars"):
         return
     store = guild_store(DATA, interaction.guild_id)
     if _find_war(store, enemy):
-        await interaction.response.send_message(f"Already at war with **{enemy}**.", ephemeral=True)
+        await interaction.response.send_message(
+            f"Already at war with **{enemy}** — `/war panel` re-posts its scoreboard.", ephemeral=True
+        )
         return
     war = {
         "enemy": enemy.strip()[:60],
@@ -325,41 +372,31 @@ async def war_start(interaction: discord.Interaction, enemy: str) -> None:
         "losses": 0,
         "start": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
         "active": True,
+        "first_to": first_to,
         "log": [],
     }
     store["wars"].append(war)
     save_data(DATA)
-    await interaction.response.send_message(embed=_brand(_war_embed(war), interaction.guild, "War declared"))
+    await interaction.response.send_message(
+        f"⚔️ War vs **{war['enemy']}** started — scoreboard posted below.", ephemeral=True
+    )
+    await _post_war_panel(interaction.channel, war, interaction.guild)
     await send_log(interaction.guild, store, f"⚔️ War started vs **{war['enemy']}**.",
                    category="kos", actor=interaction.user)
 
 
-@war_group.command(name="result", description="Log a win or loss in a war (leadership)")
-@app_commands.describe(enemy="Which war", result="Did you win or lose", note="Optional detail")
-@app_commands.choices(result=[
-    app_commands.Choice(name="🏆 Win", value="win"),
-    app_commands.Choice(name="💀 Loss", value="loss"),
-])
+@war_group.command(name="panel", description="Re-post a war's live scoreboard here (leadership)")
 @app_commands.autocomplete(enemy=war_autocomplete)
-async def war_result(
-    interaction: discord.Interaction, enemy: str, result: app_commands.Choice[str], note: str = ""
-) -> None:
-    if await _deny(interaction, "log war results"):
+async def war_panel(interaction: discord.Interaction, enemy: str) -> None:
+    if await _deny(interaction, "post war scoreboards"):
         return
     store = guild_store(DATA, interaction.guild_id)
     war = _find_war(store, enemy)
     if war is None:
         await interaction.response.send_message(f"No active war with **{enemy}**.", ephemeral=True)
         return
-    war["wins" if result.value == "win" else "losses"] += 1
-    war["log"].append({
-        "r": result.value,
-        "note": note[:120],
-        "ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
-    })
-    war["log"] = war["log"][-100:]
-    save_data(DATA)
-    await interaction.response.send_message(embed=_brand(_war_embed(war), interaction.guild))
+    await interaction.response.send_message("Scoreboard posted. ⚔️", ephemeral=True)
+    await _post_war_panel(interaction.channel, war, interaction.guild)
 
 
 @war_group.command(name="end", description="End a war (leadership)")
@@ -375,32 +412,51 @@ async def war_end(interaction: discord.Interaction, enemy: str) -> None:
     war["active"] = False
     war["end"] = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     save_data(DATA)
-    w, l = war["wins"], war["losses"]
-    verdict = "🏆 **Victory**" if w > l else ("💀 **Defeat**" if l > w else "🤝 **Draw**")
-    e = _war_embed(war)
-    e.description = f"{verdict} — final score **{w}–{l}**"
-    await interaction.response.send_message(embed=_brand(e, interaction.guild, "War over"))
-    await send_log(interaction.guild, store, f"🏳️ War vs **{war['enemy']}** ended {w}–{l}.",
-                   category="kos", actor=interaction.user)
+    await interaction.response.send_message("🏳️ War ended.", ephemeral=True)
+    await _refresh_war_panel(interaction.guild, war)
+    await _announce_war_end(interaction.channel, war, interaction.guild, interaction.user)
 
 
-@war_group.command(name="view", description="Show all active wars with win-rate bars")
+@war_group.command(name="view", description="All active wars, with live scores and links")
 async def war_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
     active = [w for w in store["wars"] if w.get("active", True)]
-    embed = discord.Embed(
-        title="⚔️  Active Wars", color=0xDC2626,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
+    embed = discord.Embed(title="⚔️  Active Wars", color=0xDC2626)
     if not active:
-        embed.description = "☮️ No active wars."
+        embed.description = "☮️ No active wars — `/war start` to begin one."
     for w in active[:20]:
         total = w["wins"] + w["losses"]
         pct = f"{w['wins'] / total * 100:.0f}%" if total else "—"
-        form = "".join("🟩" if e["r"] == "win" else "🟥" for e in w.get("log", [])[-10:]) or "—"
+        link = _war_link(interaction.guild, w)
         embed.add_field(
-            name=f"vs {w['enemy']}  ·  {w['wins']}–{w['losses']}",
-            value=f"`{_bar(w['wins'], total, 14)}` {pct} win rate\nForm: {form}\n-# since <t:{w['start']}:R>",
+            name=f"vs {w['enemy']}  ·  🏆 {w['wins']} — {w['losses']} 💀",
+            value=(
+                f"`{_bar(w['wins'], total, 14)}` {pct}"
+                + (f" · first to {w['first_to']}" if w.get("first_to") else "")
+                + (f"\n[Open scoreboard ↗]({link})" if link else "")
+            ),
+            inline=False,
+        )
+    _brand(embed, interaction.guild)
+    await _send_v2(interaction, embed)
+
+
+@war_group.command(name="history", description="Past wars and how they ended")
+async def war_history(interaction: discord.Interaction) -> None:
+    store = guild_store(DATA, interaction.guild_id)
+    done = [w for w in store["wars"] if not w.get("active", True)][-10:][::-1]
+    won = sum(1 for w in store["wars"] if not w.get("active", True) and w["wins"] > w["losses"])
+    lost = sum(1 for w in store["wars"] if not w.get("active", True) and w["losses"] > w["wins"])
+    embed = discord.Embed(
+        title="📜  War History",
+        description=f"🏆 **{won}** won · 💀 **{lost}** lost" if done else "No finished wars yet.",
+        color=0x6B7280,
+    )
+    for w in done:
+        verdict, _ = _war_verdict(w)
+        embed.add_field(
+            name=f"{verdict}  vs {w['enemy']}",
+            value=f"**{w['wins']} — {w['losses']}** · <t:{w.get('end', w['start'])}:R>",
             inline=False,
         )
     _brand(embed, interaction.guild)
@@ -423,8 +479,6 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     orders = store["orders"]
     open_o = [o for o in orders if o.get("status", "open") != "closed"]
     recent_strikes = sum(1 for s in store["strikes"] if s["ts"] >= now - 30 * 86400)
-    bank = store["bank"]
-    txs = bank.get("tx", [])
     active_wars = [w for w in store["wars"] if w.get("active", True)]
 
     hq = discord.Embed(
@@ -440,29 +494,6 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     hq.add_field(name="📻 Radio", value=f"`{store.get('radio_freq') or '—'}`")
     if guild.banner:
         hq.set_image(url=guild.banner.url)
-
-    total_in = sum(t["amount"] for t in txs if t["kind"] == "in")
-    total_out = sum(t["amount"] for t in txs if t["kind"] == "out")
-    flow = total_in + total_out
-    money = discord.Embed(
-        title="🏦  Bank", description=f"# {_money(bank.get('balance', 0))}", color=0x22C55E
-    )
-    if txs:
-        money.add_field(
-            name="📈 Balance trend · last 20 moves",
-            value=f"`{_spark([t['balance'] for t in txs[-20:]])}`",
-            inline=False,
-        )
-        money.add_field(
-            name="In vs out",
-            value=(
-                f"📥 `{_bar(total_in, flow)}` {_money(total_in)}\n"
-                f"📤 `{_bar(total_out, flow)}` {_money(total_out)}"
-            ),
-            inline=False,
-        )
-    else:
-        money.add_field(name="📈 Trend", value="*No transactions yet — `/bank deposit` to start.*", inline=False)
 
     daily = _daily_counts([o["created_ts"] for o in orders if o.get("created_ts")])
     ops = discord.Embed(
@@ -494,7 +525,7 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     else:
         wars.description = "☮️ No active wars."
 
-    cards = [hq, money, ops, wars]
+    cards = [hq, ops, wars]
     if rank_rows:
         top = max(n for _, n, _ in rank_rows) or 1
         cards.append(

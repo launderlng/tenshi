@@ -53,12 +53,12 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 ### Gang
 | Command | What it does | Who |
 |---|---|---|
-| `/gang dashboard` | One-glance overview: ranked members, KOS, bank, open/urgent tickets, strikes (30d), wars, radio | Everyone |
+| `/gang dashboard` | One-glance overview: ranked members, KOS, open/urgent tickets, strikes (30d), wars, radio | Everyone |
 | `/gang profile [@member]` | Rank, KOS status, strikes bar, join date, tickets opened/handled | Everyone |
 | `/strike add @member <reason>` | Give a strike (DMs them, warns at the limit) | Leadership |
 | `/strike list [@member]` / `remove <id>` / `clear @member` / `limit <n>` | Strike board, per-member history, remove/clear, set the limit (default 3) | Leadership (list: everyone) |
-| `/bank deposit` / `withdraw <amount> [note]` / `balance` | Gang bank ledger with running balance and recent activity | Leadership (balance: everyone) |
-| `/war start <enemy>` / `result <enemy> win\|loss` / `end <enemy>` / `view` | Track wars with W/L, win rate and a result log | Leadership (view: everyone) |
+| `/war start <enemy> [first_to]` | Posts a live scoreboard (big score, win-rate bar, 🟩🟥 rounds). Staff tap 🏆 **Round won** / 💀 **Round lost** / ↩️ Undo / 🏳️ End; with `first_to` it ends itself | Leadership |
+| `/war view` / `history` / `panel <enemy>` / `end <enemy>` | Active wars with scoreboard links · past results · re-post a scoreboard · end a war | View/history: everyone |
 
 ### Settings
 | Command | What it does | Who |
@@ -80,7 +80,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `settings.py` | `/settings` |
 | `panels.py` | `/role_menu`, `/radio`, `/eoi`, `/eoi_post`, `/gang_help` |
 | `tickets.py` | Ticket system: panel, tickets, transcripts, priority, auto-close, stats |
-| `gang.py` | `/gang`, `/strike`, `/bank`, `/war` |
+| `gang.py` | `/gang`, `/strike`, `/war` |
 
 ## Setup
 
