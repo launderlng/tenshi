@@ -213,6 +213,23 @@ def _leadership_role(
     return discord.utils.get(guild.roles, name=LEADERSHIP_ROLE_NAME)
 
 
+def _brand(
+    embed: discord.Embed, guild: discord.Guild | None, footer: str | None = None
+) -> discord.Embed:
+    """Consistent look: footer carries the server name + icon. Keeps any
+    existing footer text (prefixed to the server name)."""
+    if guild is None:
+        return embed
+    existing = embed.footer.text if embed.footer and embed.footer.text else None
+    text = footer or existing
+    text = f"{text} · {guild.name}" if text else guild.name
+    if guild.icon:
+        embed.set_footer(text=text[:2048], icon_url=guild.icon.url)
+    else:
+        embed.set_footer(text=text[:2048])
+    return embed
+
+
 def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -728,7 +745,7 @@ def _live_roster_embed(
             "No ranks mapped yet.\nMap a rank to a server role with "
             "`/roster rank_set <name> <role>` and everyone in that role shows up here."
         )
-    embed.set_footer(text=f"👥 {len(counted)} total · tap 🔄 to refresh")
+    _brand(embed, guild, f"👥 {len(counted)} total · tap 🔄 to refresh")
     return embed
 
 
@@ -1500,9 +1517,10 @@ def _proposal_embed(guild: discord.Guild, prop: dict[str, Any]) -> discord.Embed
     if bench and not approved:
         blist = ", ".join(f"<@{uid}>" for uid in bench[:30])
         embed.add_field(name=f"🪑 Bench · {len(bench)}", value=blist[:1024], inline=False)
-    embed.set_footer(
-        text="Approved ✅" if approved
-        else "Remove / Add / Reshuffle, then Approve (leadership)"
+    _brand(
+        embed,
+        guild,
+        "Approved ✅" if approved else "Remove / Add / Reshuffle, then Approve (leadership)",
     )
     return embed
 
@@ -1663,7 +1681,9 @@ class RosterProposalView(discord.ui.View):
             or "*empty*",
             inline=False,
         )
-        final.set_footer(text=f"Approved by {interaction.user}")
+        if guild.icon:
+            final.set_thumbnail(url=guild.icon.url)
+        _brand(final, guild, f"Approved by {interaction.user.display_name}")
 
         # post to KOS announcements and the KOS roster channel (once each)
         targets = []
@@ -1974,9 +1994,11 @@ def _settings_embed(guild: discord.Guild, store: dict[str, Any]) -> discord.Embe
         ),
         inline=False,
     )
-    embed.set_footer(
-        text=f"🎫 {len(store.get('ticket_types', []))} ticket types · "
-        f"🎖️ {len(store.get('ranks', []))} ranks"
+    _brand(
+        embed,
+        guild,
+        f"🎫 {len(store.get('ticket_types', []))} ticket types · "
+        f"🎖️ {len(store.get('ranks', []))} ranks",
     )
     return embed
 
@@ -2372,7 +2394,8 @@ async def gang_help(interaction: discord.Interaction) -> None:
             "`/ticket panel` — post the order menu\n"
             "`/ticket board` — active orders by type\n"
             "`/ticket toggle` — open/close new orders\n"
-            "`/close` — close the ticket you're in\n"
+            "`/close [reason]` — close the ticket you're in\n"
+            "`/ticket add` · `/ticket remove` — who's in a ticket\n"
             "In a ticket: 💰 Mark Paid · 🔒 Close (saves transcript)"
         ),
         inline=False,
@@ -2401,7 +2424,9 @@ async def gang_help(interaction: discord.Interaction) -> None:
         ),
         inline=False,
     )
-    embed.set_footer(text="Staff commands need the leadership role or admin")
+    if interaction.client.user:
+        embed.set_thumbnail(url=interaction.client.user.display_avatar.url)
+    _brand(embed, interaction.guild, "Staff commands need the leadership role or admin")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
@@ -2510,8 +2535,27 @@ def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
     return embed
 
 
+def _open_for(order: dict | None) -> str | None:
+    """Human 'open for' duration, e.g. '2h 14m', from the order's created_ts."""
+    ts = (order or {}).get("created_ts")
+    if not ts:
+        return None
+    secs = max(0, int(datetime.datetime.now(datetime.timezone.utc).timestamp()) - ts)
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    parts = [f"{d}d"] if d else []
+    if h:
+        parts.append(f"{h}h")
+    parts.append(f"{m}m")
+    return " ".join(parts)
+
+
 async def _close_ticket(
-    interaction: discord.Interaction, store: dict[str, Any], order: dict | None
+    interaction: discord.Interaction,
+    store: dict[str, Any],
+    order: dict | None,
+    reason: str | None = None,
 ) -> None:
     """Save a transcript (if a channel is set), log it, then delete the channel."""
     guild = interaction.guild
@@ -2521,6 +2565,8 @@ async def _close_ticket(
     ttype = (order.get("type") if order else "Ticket") or "Ticket"
     transcript = await _build_transcript(channel)
     fname = f"ticket-{oid}.txt"
+    reason = (reason or "").strip() or None
+    open_for = _open_for(order)
 
     def _summary_embed() -> discord.Embed:
         e = discord.Embed(
@@ -2535,8 +2581,17 @@ async def _close_ticket(
                 value="🟢 Yes" if order.get("paid") else "🔴 No",
                 inline=True,
             )
+            if order.get("claimed_by"):
+                e.add_field(
+                    name="Handled by", value=f"<@{order['claimed_by']}>", inline=True
+                )
             e.add_field(name="Items", value=order.get("guns") or "—", inline=False)
-        e.set_footer(text=f"Closed by {interaction.user}")
+        if reason:
+            e.add_field(name="Reason", value=reason[:1024], inline=False)
+        if open_for:
+            e.add_field(name="Open for", value=open_for, inline=True)
+        e.add_field(name="Closed by", value=interaction.user.mention, inline=True)
+        _brand(e, guild)
         return e
 
     # transcript goes to: the transcript channel if set, else the ticket log,
@@ -2578,7 +2633,11 @@ async def _close_ticket(
                 value="🟢 Yes" if order.get("paid") else "🔴 No",
                 inline=True,
             )
-            dm.set_footer(text="A transcript is attached.")
+            if reason:
+                dm.add_field(name="Reason", value=reason[:1024], inline=False)
+            if guild.icon:
+                dm.set_thumbnail(url=guild.icon.url)
+            dm.set_footer(text=f"{guild.name} · transcript attached")
             try:
                 await member.send(
                     embed=dm,
@@ -2602,7 +2661,9 @@ async def _close_ticket(
                 ("Order", f"#{order['id']}", True),
                 ("Customer", f"<@{order['user_id']}>", True),
                 ("Paid", "🟢 Yes" if order.get("paid") else "🔴 No", True),
+                ("Open for", open_for or "—", True),
                 ("Items", order.get("guns") or "—", False),
+                ("Reason", reason or "—", False),
             ],
         )
 
@@ -2761,9 +2822,18 @@ class OrderModal(discord.ui.Modal):
             ),
             color=EMBED_COLOR,
         )
+        welcome.set_author(
+            name=interaction.user.display_name,
+            icon_url=interaction.user.display_avatar.url,
+        )
+        welcome.add_field(
+            name="Staff tools",
+            value="🙋 Claim · 💰 Mark Paid · 🔒 Close · `/ticket add` · `/close [reason]`",
+            inline=False,
+        )
         msg = await channel.send(
             content=ping,
-            embeds=[welcome, _order_embed(order)],
+            embeds=[welcome, _brand(_order_embed(order), guild)],
             view=OrderTicketView(),
             allowed_mentions=discord.AllowedMentions(users=True, roles=True),
         )
@@ -2871,7 +2941,12 @@ class OrderTicketView(discord.ui.View):
         prev = order.get("claimed_by")
         order["claimed_by"] = interaction.user.id
         save_data(DATA)
-        await interaction.message.edit(embed=_order_embed(order), view=self)
+        await interaction.message.edit(
+            embeds=[interaction.message.embeds[0], _brand(_order_embed(order), interaction.guild)]
+            if len(interaction.message.embeds) > 1
+            else [_brand(_order_embed(order), interaction.guild)],
+            view=self,
+        )
         verb = "reassigned to" if prev and prev != interaction.user.id else "claimed by"
         await interaction.channel.send(f"🙋 Ticket {verb} {interaction.user.mention}.")
         await interaction.followup.send(
@@ -2914,7 +2989,12 @@ class OrderTicketView(discord.ui.View):
             return
         order["paid"] = True
         save_data(DATA)
-        await interaction.message.edit(embed=_order_embed(order), view=self)
+        await interaction.message.edit(
+            embeds=[interaction.message.embeds[0], _brand(_order_embed(order), interaction.guild)]
+            if len(interaction.message.embeds) > 1
+            else [_brand(_order_embed(order), interaction.guild)],
+            view=self,
+        )
         await interaction.followup.send(
             f"Order #{order['id']} marked **paid**. 💰", ephemeral=True
         )
@@ -3198,7 +3278,9 @@ async def ticket_panel(
         ),
         inline=False,
     )
-    embed.set_footer(text="Tickets are private · one click to open")
+    if interaction.guild.icon:
+        embed.set_thumbnail(url=interaction.guild.icon.url)
+    _brand(embed, interaction.guild, "Tickets are private · one click to open")
     await interaction.channel.send(embed=embed, view=TicketPanelView(options))
     await interaction.response.send_message("Ticket panel posted. ✅", ephemeral=True)
 
@@ -3239,13 +3321,81 @@ async def ticket_board(interaction: discord.Interaction) -> None:
         )
         return
     store = guild_store(DATA, interaction.guild_id)
-    await interaction.response.send_message(embed=_orders_board_embed(store))
+    await interaction.response.send_message(
+        embed=_brand(_orders_board_embed(store), interaction.guild)
+    )
+
+
+async def _ticket_member_access(
+    interaction: discord.Interaction, member: discord.Member, allow: bool
+) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only staff can change who's in a ticket.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    order = _find_order_by_channel(store, interaction.channel_id)
+    if order is None:
+        await interaction.response.send_message(
+            "Run this inside a ticket channel.", ephemeral=True
+        )
+        return
+    if not allow and member.id == order.get("user_id"):
+        await interaction.response.send_message(
+            "You can't remove the ticket owner — close the ticket instead.",
+            ephemeral=True,
+        )
+        return
+    try:
+        if allow:
+            await interaction.channel.set_permissions(
+                member, view_channel=True, send_messages=True, read_message_history=True,
+                reason=f"Added to ticket by {interaction.user}",
+            )
+        else:
+            await interaction.channel.set_permissions(
+                member, overwrite=None, reason=f"Removed from ticket by {interaction.user}"
+            )
+    except discord.Forbidden:
+        await interaction.response.send_message(
+            "I can't edit this channel's permissions — check my **Manage Channels**.",
+            ephemeral=True,
+        )
+        return
+    verb = "added to" if allow else "removed from"
+    await interaction.response.send_message(f"{member.mention} {verb} this ticket. ✅")
+    await send_log(
+        interaction.guild,
+        store,
+        f"🎫 {member.mention} {verb} ticket #{order['id']}.",
+        category="tickets",
+        actor=interaction.user,
+        channel_ctx=interaction.channel,
+    )
+
+
+@ticket_group.command(name="add", description="Add someone to the ticket you're in (staff)")
+@app_commands.describe(member="Who to let into this ticket")
+async def ticket_add(interaction: discord.Interaction, member: discord.Member) -> None:
+    await _ticket_member_access(interaction, member, allow=True)
+
+
+@ticket_group.command(
+    name="remove", description="Remove someone from the ticket you're in (staff)"
+)
+@app_commands.describe(member="Who to take out of this ticket")
+async def ticket_remove(interaction: discord.Interaction, member: discord.Member) -> None:
+    await _ticket_member_access(interaction, member, allow=False)
 
 
 @bot.tree.command(
     name="close", description="Close the ticket you're in (staff or ticket owner)"
 )
-async def close_ticket_cmd(interaction: discord.Interaction) -> None:
+@app_commands.describe(reason="Optional reason — shown in the transcript and the customer's DM")
+async def close_ticket_cmd(
+    interaction: discord.Interaction, reason: str | None = None
+) -> None:
     store = guild_store(DATA, interaction.guild_id)
     order = _find_order_by_channel(store, interaction.channel_id)
     if order is None:
@@ -3268,7 +3418,7 @@ async def close_ticket_cmd(interaction: discord.Interaction) -> None:
     await interaction.response.send_message(
         "Closing — transcript saved, channel will delete shortly. 🔒", ephemeral=True
     )
-    await _close_ticket(interaction, store, order)
+    await _close_ticket(interaction, store, order, reason)
 
 
 @bot.tree.command(

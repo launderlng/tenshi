@@ -34,7 +34,8 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `/ticket panel [message]` | Post a dropdown menu of types; picking one opens a private ticket | Leadership |
 | `/ticket toggle` | Open or close new ticket orders for everyone | Leadership |
 | `/ticket board` | Active orders grouped by type, paid/unpaid | Staff |
-| `/close` | Close the ticket you're in (saves transcript, DMs the customer, deletes channel) | Staff or ticket owner |
+| `/close [reason]` | Close the ticket you're in — the reason and how long it was open go in the transcript, the customer's DM and the log | Staff or ticket owner |
+| `/ticket add @member` / `/ticket remove @member` | Let someone into the ticket you're in, or take them out | Staff |
 | (in ticket) 💰 Mark Paid · 🔒 Close | Mark paid, or close → transcript then delete | Staff |
 
 ### Recruitment · Radio · Roles
