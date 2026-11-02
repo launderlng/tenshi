@@ -389,6 +389,39 @@ async def _send_v2(
         await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
 
 
+_SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def _spark(values) -> str:
+    """Unicode sparkline, e.g. ▁▂▄▇█▆▃ — reads like a mini line graph."""
+    vals = [float(v) for v in values]
+    if not vals:
+        return "—"
+    lo, hi = min(vals), max(vals)
+    if hi == lo:
+        return _SPARK_CHARS[3] * len(vals)
+    return "".join(_SPARK_CHARS[min(7, int((v - lo) / (hi - lo) * 7.999))] for v in vals)
+
+
+def _bar(n: float, total: float, width: int = 12) -> str:
+    """Filled progress bar, e.g. ███████░░░░░."""
+    if total <= 0:
+        return "░" * width
+    k = max(0, min(width, round(width * n / total)))
+    return "█" * k + "░" * (width - k)
+
+
+def _daily_counts(timestamps, days: int = 14) -> list[int]:
+    """How many timestamps fell on each of the last `days` UTC days (oldest first)."""
+    today = int(datetime.datetime.now(datetime.timezone.utc).timestamp()) // 86400
+    counts = [0] * days
+    for ts in timestamps:
+        d = today - int(ts) // 86400
+        if 0 <= d < days:
+            counts[days - 1 - d] += 1
+    return counts
+
+
 def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 

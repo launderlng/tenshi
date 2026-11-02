@@ -222,25 +222,37 @@ async def bank_withdraw(
     await _bank_move(interaction, "out", amount, note)
 
 
-@bank_group.command(name="balance", description="Show the gang bank balance + recent activity")
+@bank_group.command(name="balance", description="Show the gang bank balance, trend + recent activity")
 async def bank_balance(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
     bank = store["bank"]
-    txs = bank.get("tx", [])[-10:][::-1]
-    total_in = sum(t["amount"] for t in bank.get("tx", []) if t["kind"] == "in")
-    total_out = sum(t["amount"] for t in bank.get("tx", []) if t["kind"] == "out")
+    all_tx = bank.get("tx", [])
+    txs = all_tx[-10:][::-1]
+    total_in = sum(t["amount"] for t in all_tx if t["kind"] == "in")
+    total_out = sum(t["amount"] for t in all_tx if t["kind"] == "out")
+    flow = total_in + total_out
     embed = discord.Embed(
         title="🏦  Gang Bank",
         description=f"# {_money(bank.get('balance', 0))}",
         color=0x22C55E,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
-    embed.add_field(name="📥 Total in", value=_money(total_in), inline=True)
-    embed.add_field(name="📤 Total out", value=_money(total_out), inline=True)
-    embed.add_field(name="🧾 Transactions", value=str(len(bank.get("tx", []))), inline=True)
-    if txs:
+    if all_tx:
         embed.add_field(
-            name="Recent",
+            name="📈 Balance trend · last 20 moves",
+            value=f"`{_spark([t['balance'] for t in all_tx[-20:]])}`",
+            inline=False,
+        )
+        embed.add_field(
+            name="In vs out",
+            value=(
+                f"📥 `{_bar(total_in, flow)}` {_money(total_in)}\n"
+                f"📤 `{_bar(total_out, flow)}` {_money(total_out)}"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🧾 Recent",
             value="\n".join(
                 f"{'📥' if t['kind'] == 'in' else '📤'} **{_money(t['amount'])}** · <t:{t['ts']}:R> · "
                 f"<@{t['by']}>{(' — ' + t['note']) if t['note'] else ''}"
@@ -248,7 +260,9 @@ async def bank_balance(interaction: discord.Interaction) -> None:
             )[:1024],
             inline=False,
         )
-    _brand(embed, interaction.guild)
+    else:
+        embed.add_field(name="📈 Trend", value="*No transactions yet — `/bank deposit` to start.*", inline=False)
+    _brand(embed, interaction.guild, f"{len(all_tx)} transactions")
     await _send_v2(interaction, embed)
 
 
@@ -370,18 +384,23 @@ async def war_end(interaction: discord.Interaction, enemy: str) -> None:
                    category="kos", actor=interaction.user)
 
 
-@war_group.command(name="view", description="Show all active wars")
+@war_group.command(name="view", description="Show all active wars with win-rate bars")
 async def war_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
     active = [w for w in store["wars"] if w.get("active", True)]
-    embed = discord.Embed(title="⚔️  Active Wars", color=0xDC2626,
-                          timestamp=datetime.datetime.now(datetime.timezone.utc))
+    embed = discord.Embed(
+        title="⚔️  Active Wars", color=0xDC2626,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
     if not active:
         embed.description = "☮️ No active wars."
     for w in active[:20]:
+        total = w["wins"] + w["losses"]
+        pct = f"{w['wins'] / total * 100:.0f}%" if total else "—"
+        form = "".join("🟩" if e["r"] == "win" else "🟥" for e in w.get("log", [])[-10:]) or "—"
         embed.add_field(
-            name=f"vs {w['enemy']}",
-            value=f"🏆 {w['wins']} · 💀 {w['losses']} · since <t:{w['start']}:R>",
+            name=f"vs {w['enemy']}  ·  {w['wins']}–{w['losses']}",
+            value=f"`{_bar(w['wins'], total, 14)}` {pct} win rate\nForm: {form}\n-# since <t:{w['start']}:R>",
             inline=False,
         )
     _brand(embed, interaction.guild)
@@ -390,101 +409,131 @@ async def war_view(interaction: discord.Interaction) -> None:
 
 # ---- dashboard + member profile -------------------------------------------- #
 
-@gang_group.command(name="dashboard", description="One-glance overview of the whole gang")
-async def gang_dashboard(interaction: discord.Interaction) -> None:
-    guild = interaction.guild
-    store = guild_store(DATA, interaction.guild_id)
+def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discord.Embed]:
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
     ranked_ids: set[int] = set()
+    rank_rows: list[tuple[str, int, int]] = []
     for r in store.get("ranks", []):
         role = guild.get_role(r["role_id"])
-        if role:
-            ranked_ids.update(m.id for m in role.members)
-    open_tickets = sum(1 for o in store["orders"] if o.get("status", "open") != "closed")
-    urgent = sum(
-        1 for o in store["orders"]
-        if o.get("status", "open") != "closed" and o.get("priority") in ("high", "urgent")
-    )
+        if role is not None:
+            members = role.members
+            ranked_ids.update(m.id for m in members)
+            rank_rows.append((r["name"], len(members), role.position))
+    rank_rows.sort(key=lambda x: -x[2])
+    orders = store["orders"]
+    open_o = [o for o in orders if o.get("status", "open") != "closed"]
+    rated = [o["rating"] for o in orders if o.get("rating")]
+    recent_strikes = sum(1 for s in store["strikes"] if s["ts"] >= now - 30 * 86400)
+    bank = store["bank"]
+    txs = bank.get("tx", [])
     active_wars = [w for w in store["wars"] if w.get("active", True)]
-    month_ago = int(datetime.datetime.now(datetime.timezone.utc).timestamp()) - 30 * 86400
-    recent_strikes = sum(1 for s in store["strikes"] if s["ts"] >= month_ago)
-    rated = [o["rating"] for o in store["orders"] if o.get("rating")]
 
-    embed = discord.Embed(
-        title=f"🐉  {guild.name} — Dashboard",
+    hq = discord.Embed(
+        title=f"🐉  {guild.name} — Command Center",
+        description=f"-# 🟢 Live · updated <t:{now}:R> · {guild.member_count or len(guild.members)} in server",
         color=EMBED_COLOR,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     if guild.icon:
-        embed.set_thumbnail(url=guild.icon.url)
-    embed.add_field(name="👥 Members (ranked)", value=f"**{len(ranked_ids)}**", inline=True)
-    embed.add_field(name="💀 On KOS", value=f"**{len(store['kos'])}**", inline=True)
-    embed.add_field(name="🏦 Bank", value=f"**{_money(store['bank'].get('balance', 0))}**", inline=True)
-    embed.add_field(
-        name="🎫 Open tickets",
-        value=f"**{open_tickets}**" + (f" · 🟠 {urgent} high/urgent" if urgent else ""),
-        inline=True,
+        hq.set_thumbnail(url=guild.icon.url)
+    hq.add_field(name="👥 Ranked", value=f"**{len(ranked_ids)}**")
+    hq.add_field(name="💀 On KOS", value=f"**{len(store['kos'])}**")
+    hq.add_field(name="⚠️ Strikes 30d", value=f"**{recent_strikes}**")
+    hq.add_field(name="📻 Radio", value=f"`{store.get('radio_freq') or '—'}`")
+    if guild.banner:
+        hq.set_image(url=guild.banner.url)
+
+    total_in = sum(t["amount"] for t in txs if t["kind"] == "in")
+    total_out = sum(t["amount"] for t in txs if t["kind"] == "out")
+    flow = total_in + total_out
+    money = discord.Embed(
+        title="🏦  Bank", description=f"# {_money(bank.get('balance', 0))}", color=0x22C55E
     )
-    embed.add_field(name="⭐ Avg rating", value=f"**{sum(rated) / len(rated):.1f}**" if rated else "—", inline=True)
-    embed.add_field(name="⚠️ Strikes (30d)", value=f"**{recent_strikes}**", inline=True)
-    embed.add_field(
-        name="⚔️ Wars",
-        value="\n".join(f"vs **{w['enemy']}** — {w['wins']}–{w['losses']}" for w in active_wars[:5])
-        or "☮️ None active",
+    if txs:
+        money.add_field(
+            name="📈 Balance trend · last 20 moves",
+            value=f"`{_spark([t['balance'] for t in txs[-20:]])}`",
+            inline=False,
+        )
+        money.add_field(
+            name="In vs out",
+            value=(
+                f"📥 `{_bar(total_in, flow)}` {_money(total_in)}\n"
+                f"📤 `{_bar(total_out, flow)}` {_money(total_out)}"
+            ),
+            inline=False,
+        )
+    else:
+        money.add_field(name="📈 Trend", value="*No transactions yet — `/bank deposit` to start.*", inline=False)
+
+    daily = _daily_counts([o["created_ts"] for o in orders if o.get("created_ts")])
+    avg = f"{sum(rated) / len(rated):.1f}⭐" if rated else "—"
+    ops = discord.Embed(
+        title="🎫  Tickets",
+        description=f"**{len(open_o)}** open · **{len(orders)}** all-time · avg {avg}",
+        color=0x0EA5E9,
+    )
+    ops.add_field(
+        name="📊 Opened per day · last 14d",
+        value=f"`{_spark(daily)}`  peak **{max(daily)}**/day · **{sum(daily)}** total",
         inline=False,
     )
-    freq = store.get("radio_freq")
-    embed.add_field(name="📻 Radio", value=f"`{freq}`" if freq else "—", inline=True)
-    embed.add_field(name="🎖️ Ranks", value=str(len(store.get("ranks", []))), inline=True)
-    embed.add_field(name="📨 Tickets ever", value=str(len(store["orders"])), inline=True)
-    _brand(embed, guild)
+    if open_o:
+        lines = []
+        for key, label in reversed(PRIORITIES):
+            n = sum(1 for o in open_o if o.get("priority", "normal") == key)
+            dot, name = label.split(" ", 1)
+            lines.append(f"{dot} `{_bar(n, len(open_o), 10)}` **{n}** {name}")
+        ops.add_field(name="🚩 Open by priority", value="\n".join(lines), inline=False)
 
-    # Components V2 layout — built at call time so a problem can never take the
-    # bot down; any failure falls back to the classic embed above.
-    try:
-        wars_txt = "\n".join(
-            f"⚔️ vs **{w['enemy']}** — {w['wins']}–{w['losses']}" for w in active_wars[:5]
-        ) or "☮️ No active wars"
-        header = discord.ui.TextDisplay(
-            f"# 🐉 {guild.name}\n-# Gang dashboard · <t:{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}:R>"
-        )
-        container = discord.ui.Container(accent_colour=discord.Colour(EMBED_COLOR))
-        if guild.icon:
-            container.add_item(
-                discord.ui.Section(header, accessory=discord.ui.Thumbnail(guild.icon.url))
-            )
-        else:
-            container.add_item(header)
-        container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.TextDisplay(
-            f"### 👥 People\n"
-            f"**{len(ranked_ids)}** ranked members · 💀 **{len(store['kos'])}** on KOS · "
-            f"⚠️ **{recent_strikes}** strikes (30d)"
-        ))
-        container.add_item(discord.ui.TextDisplay(
-            f"### 🏦 Bank\n# {_money(store['bank'].get('balance', 0))}"
-        ))
-        container.add_item(discord.ui.TextDisplay(
-            f"### 🎫 Tickets\n"
-            f"**{open_tickets}** open"
-            + (f" · 🟠 **{urgent}** high/urgent" if urgent else "")
-            + f" · ⭐ {f'{sum(rated) / len(rated):.1f}' if rated else '—'} avg · "
-            f"**{len(store['orders'])}** all-time"
-        ))
-        container.add_item(discord.ui.Separator())
-        container.add_item(discord.ui.TextDisplay(f"### ⚔️ Wars\n{wars_txt}"))
-        container.add_item(discord.ui.TextDisplay(
-            f"-# 📻 Radio `{freq or '—'}` · 🎖️ {len(store.get('ranks', []))} ranks"
-        ))
-        layout = discord.ui.LayoutView()
-        layout.add_item(container)
-        await interaction.response.send_message(view=layout)
-        return
-    except Exception as exc:  # noqa: BLE001 — any V2 issue → classic embed
-        log.warning("V2 dashboard failed, falling back to embed: %s", exc)
-    if not interaction.response.is_done():
-        await interaction.response.send_message(embed=embed)
+    wars = discord.Embed(title="⚔️  Wars", color=0xDC2626)
+    if active_wars:
+        rows = []
+        for w in active_wars[:5]:
+            total = w["wins"] + w["losses"]
+            pct = f"{w['wins'] / total * 100:.0f}%" if total else "—"
+            rows.append(f"**vs {w['enemy']}** · {w['wins']}–{w['losses']}\n`{_bar(w['wins'], total, 14)}` {pct} win rate")
+        wars.description = "\n".join(rows)
     else:
-        await interaction.followup.send(embed=embed)
+        wars.description = "☮️ No active wars."
+
+    cards = [hq, money, ops, wars]
+    if rank_rows:
+        top = max(n for _, n, _ in rank_rows) or 1
+        cards.append(
+            discord.Embed(
+                title="🎖️  Ranks",
+                description="\n".join(
+                    f"`{_bar(n, top, 10)}` **{n}** · {name}" for name, n, _ in rank_rows[:8]
+                ),
+                color=0xA855F7,
+            )
+        )
+    _brand(cards[-1], guild, "🔄 tap Refresh for live numbers")
+    return cards
+
+
+class DashboardView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Refresh", style=discord.ButtonStyle.secondary, emoji="🔄",
+        custom_id="gang:dashboard",
+    )
+    async def refresh(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        store = guild_store(DATA, interaction.guild_id)
+        await _edit_card(
+            interaction.message,
+            _dashboard_cards(interaction.guild, store),
+            DashboardView,
+            interaction=interaction,
+        )
+
+
+@gang_group.command(name="dashboard", description="Live command center for the whole gang")
+async def gang_dashboard(interaction: discord.Interaction) -> None:
+    store = guild_store(DATA, interaction.guild_id)
+    await _send_card(interaction, _dashboard_cards(interaction.guild, store), DashboardView)
 
 
 @gang_group.command(name="profile", description="Everything about one member")

@@ -1242,7 +1242,7 @@ async def ticket_autoclose(interaction: discord.Interaction, hours: app_commands
     )
 
 
-@ticket_group.command(name="stats", description="Ticket stats & staff leaderboard (staff)")
+@ticket_group.command(name="stats", description="Ticket analytics & staff leaderboard (staff)")
 async def ticket_stats(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
         await interaction.response.send_message("Only staff can view stats.", ephemeral=True)
@@ -1250,66 +1250,62 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
     orders = store["orders"]
     closed = [o for o in orders if o.get("status") == "closed"]
-    open_n = sum(1 for o in orders if o.get("status", "open") != "closed")
+    open_n = len(orders) - len(closed)
+    paid = sum(1 for o in orders if o.get("paid"))
     rated = [o["rating"] for o in closed if o.get("rating")]
     durations = [
-        o["closed_ts"] - o["created_ts"]
-        for o in closed
-        if o.get("closed_ts") and o.get("created_ts")
+        o["closed_ts"] - o["created_ts"] for o in closed if o.get("closed_ts") and o.get("created_ts")
     ]
 
     def fmt_dur(secs: float) -> str:
         h, rem = divmod(int(secs), 3600)
         return f"{h}h {rem // 60}m" if h else f"{rem // 60}m"
 
-    embed = discord.Embed(
-        title="📊  Ticket Stats",
+    daily = _daily_counts([o["created_ts"] for o in orders if o.get("created_ts")])
+    summary = discord.Embed(
+        title="📊  Ticket Analytics",
+        description=f"**{open_n}** open · **{len(closed)}** closed · 💰 **{paid}** paid",
         color=EMBED_COLOR,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
-    embed.add_field(name="Open", value=f"**{open_n}**", inline=True)
-    embed.add_field(name="Closed", value=f"**{len(closed)}**", inline=True)
-    embed.add_field(
-        name="Paid",
-        value=f"**{sum(1 for o in orders if o.get('paid'))}**",
-        inline=True,
+    summary.add_field(name="⭐ Avg rating", value=f"**{sum(rated) / len(rated):.1f}** ({len(rated)})" if rated else "—")
+    summary.add_field(name="⏱️ Avg time open", value=fmt_dur(sum(durations) / len(durations)) if durations else "—")
+    summary.add_field(
+        name="📈 Opened per day · last 14d",
+        value=f"`{_spark(daily)}`  peak **{max(daily)}**/day · **{sum(daily)}** total",
+        inline=False,
     )
-    embed.add_field(
-        name="Avg rating",
-        value=f"**{sum(rated) / len(rated):.1f}** ⭐ ({len(rated)} ratings)" if rated else "—",
-        inline=True,
-    )
-    embed.add_field(
-        name="Avg time open",
-        value=fmt_dur(sum(durations) / len(durations)) if durations else "—",
-        inline=True,
-    )
+    if rated:
+        summary.add_field(
+            name="⭐ Rating spread",
+            value="\n".join(
+                f"`{k}★` `{_bar(rated.count(k), len(rated), 12)}` {rated.count(k)}" for k in range(5, 0, -1)
+            ),
+            inline=False,
+        )
 
     board: dict[int, dict[str, Any]] = {}
     for o in closed:
         h = o.get("claimed_by")
-        if not h:
-            continue
-        b = board.setdefault(h, {"n": 0, "r": []})
-        b["n"] += 1
-        if o.get("rating"):
-            b["r"].append(o["rating"])
+        if h:
+            b = board.setdefault(h, {"n": 0, "r": []})
+            b["n"] += 1
+            if o.get("rating"):
+                b["r"].append(o["rating"])
+    lb = discord.Embed(title="🏆  Staff Leaderboard", color=0xF59E0B)
     if board:
         medals = ["🥇", "🥈", "🥉"]
         ranked = sorted(board.items(), key=lambda kv: -kv[1]["n"])[:10]
-        lines = []
-        for i, (uid, b) in enumerate(ranked):
-            avg = f" · {sum(b['r']) / len(b['r']):.1f}⭐" if b["r"] else ""
-            lines.append(f"{medals[i] if i < 3 else f'`{i + 1}.`'} <@{uid}> — **{b['n']}** handled{avg}")
-        embed.add_field(name="🏆 Staff leaderboard", value="\n".join(lines), inline=False)
-    else:
-        embed.add_field(
-            name="🏆 Staff leaderboard",
-            value="*No claimed tickets closed yet — hit 🙋 Claim on tickets to get on the board.*",
-            inline=False,
+        top = ranked[0][1]["n"]
+        lb.description = "\n".join(
+            f"{medals[i] if i < 3 else f'`{i + 1}.`'} <@{uid}>\n"
+            f"`{_bar(b['n'], top, 12)}` **{b['n']}** handled"
+            + (f" · {sum(b['r']) / len(b['r']):.1f}⭐" if b["r"] else "")
+            for i, (uid, b) in enumerate(ranked)
         )
-    _brand(embed, interaction.guild)
-    await _send_v2(interaction, embed)
+    else:
+        lb.description = "*No claimed tickets closed yet — hit 🙋 Claim on tickets to get on the board.*"
+    _brand(lb, interaction.guild)
+    await _send_card(interaction, [summary, lb])
 
 
 @bot.tree.command(

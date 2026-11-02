@@ -59,6 +59,8 @@ async def on_ready() -> None:
     bot.add_view(ROSTER_PROPOSAL_VIEW)
     bot.add_view(ROSTER_REFRESH_VIEW)
     bot.add_view(RatingView())
+    bot.add_view(DashboardView())
+    bot.add_view(HelpView())
     if not ticket_autoclose_loop.is_running():
         ticket_autoclose_loop.start()
     try:

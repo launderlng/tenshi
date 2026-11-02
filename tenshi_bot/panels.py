@@ -365,89 +365,84 @@ class EOIPromptView(discord.ui.View):
 
 # ---- /gang_help ------------------------------------------------------------- #
 
-@bot.tree.command(name="gang_help", description="List every gang-bot command")
+_HELP_PAGES: dict[str, tuple[str, str, str]] = {
+    "home": ("🏠", "Tenshi — Command Guide",
+             "**Pick a category below** to see its commands.\n\n"
+             "**Quick start**\n"
+             "1️⃣ `/settings` — point me at your channels & roles\n"
+             "2️⃣ `/roster import_roles` — your ranks from your server roles\n"
+             "3️⃣ `/ticket type_add` → `/ticket panel` — open for orders\n"
+             "4️⃣ `/gang dashboard` — your live command center"),
+    "gang": ("🐉", "Gang",
+             "`/gang dashboard` — live command center with graphs + 🔄 refresh\n"
+             "`/gang profile [@member]` — rank, KOS, strikes, tickets\n"
+             "`/strike add` · `list` · `remove` · `clear` · `limit`\n"
+             "`/bank deposit` · `withdraw` · `balance` — ledger with trend graph\n"
+             "`/war start` · `result` · `end` · `view` — W/L, win-rate bars, form"),
+    "roster": ("🎯", "Roster",
+               "`/roster view` — live from your rank roles, with 🔄 refresh\n"
+               "`/roster import_roles` — every server role as a rank ⭐\n"
+               "`/roster rank_set <name> <role>` · `rank_list` · `rank_remove`\n"
+               "`/roster add` · `remove` · `reset`"),
+    "kos": ("💀", "KOS",
+            "`/kos view` · `/kos add @members [reason]` · `/kos remove @member`\n"
+            "`/kos start <text> <size>` — sign-up → 🎲 Draw → pick → ✅ approve → posts to announcements + roster (channels remembered)\n"
+            "`/kos reset` — full reset, keeps your saved channels"),
+    "tickets": ("🎫", "Tickets",
+                "`/ticket type_add` · `type_remove` · `type_list` · `set_category`\n"
+                "`/ticket panel` — post the order menu · `/ticket toggle` — open/close orders\n"
+                "`/ticket board` — open orders, urgent first\n"
+                "`/ticket stats` — analytics, rating spread, staff leaderboard\n"
+                "`/ticket autoclose <hours>` · `/ticket add` · `/ticket remove`\n"
+                "`/close [reason]` — HTML transcript + ⭐ rating DM\n"
+                "In a ticket: 🙋 Claim · 💰 Paid · 🚩 Priority · 🔒 Close"),
+    "community": ("📨", "Recruitment · Radio · Roles",
+                  "`/eoi` — apply · `/eoi_post` — post Apply button (votes saved)\n"
+                  "`/radio new` · `view` · `panel`\n"
+                  "`/role_menu add` · `remove` · `list` · `post`"),
+    "settings": ("⚙️", "Settings",
+                 "`/settings` — see everything\n"
+                 "`/settings setting:<name> channel:<#chan>` (or `role:<@role>`)\n"
+                 "Leave the channel/role empty to clear it"),
+}
+
+
+def _help_embed(key: str, guild: discord.Guild | None, avatar_url: str | None) -> discord.Embed:
+    emoji, title, body = _HELP_PAGES.get(key, _HELP_PAGES["home"])
+    e = discord.Embed(title=f"{emoji}  {title}", description=body, color=EMBED_COLOR)
+    if avatar_url:
+        e.set_thumbnail(url=avatar_url)
+    _brand(e, guild, "Staff commands need the leadership role or admin")
+    return e
+
+
+class HelpView(discord.ui.View):
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.select(
+        custom_id="help:menu",
+        placeholder="📚  Pick a category…",
+        options=[
+            discord.SelectOption(label=t, value=k, emoji=e) for k, (e, t, _) in _HELP_PAGES.items()
+        ],
+    )
+    async def pick(self, interaction: discord.Interaction, select: discord.ui.Select) -> None:
+        avatar = interaction.client.user.display_avatar.url if interaction.client.user else None
+        await _edit_card(
+            interaction.message,
+            [_help_embed(select.values[0], interaction.guild, avatar)],
+            HelpView,
+            interaction=interaction,
+        )
+
+
+@bot.tree.command(name="gang_help", description="Interactive guide to every command")
 async def gang_help(interaction: discord.Interaction) -> None:
-    embed = discord.Embed(
-        title="🐉  Tenshi — Command Guide",
-        description=(
-            "**New here? Use `/settings` to point me at your channels & roles "
-            "— then post your panels.**"
-        ),
-        color=EMBED_COLOR,
+    avatar = interaction.client.user.display_avatar.url if interaction.client.user else None
+    await _send_card(
+        interaction, [_help_embed("home", interaction.guild, avatar)], HelpView, ephemeral=True
     )
-    embed.add_field(
-        name="🎯  Roster",
-        value=(
-            "`/roster view` — live from your rank roles, with 🔄 refresh\n"
-            "`/roster import_roles` — add every server role as a rank ⭐\n"
-            "`/roster rank_set <name> <role>` — map one rank to a role\n"
-            "`/roster rank_list` · `rank_remove`\n"
-            "`/roster add` · `remove` · `reset` — manual list"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="💀  KOS",
-        value=(
-            "`/kos view` · `/kos add @members [reason]`\n"
-            "`/kos remove @member` · `/kos reset` — full reset (keeps channels)\n"
-            "`/kos start` — sign-up (pings a role) → 🎲 Draw → pick members → approve → posts to announcements + roster"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="🎫  Tickets / Orders",
-        value=(
-            "`/ticket type_add` — add a type + its category\n"
-            "`/ticket set_category` — where tickets open\n"
-            "`/ticket panel` — post the order menu\n"
-            "`/ticket board` — active orders by type\n"
-            "`/ticket toggle` — open/close new orders\n"
-            "`/close [reason]` — close the ticket you're in\n"
-            "`/ticket add` · `/ticket remove` — who's in a ticket\n"
-            "`/ticket stats` — leaderboard · `/ticket autoclose <hours>`\n"
-            "In a ticket: 💰 Mark Paid · 🔒 Close (saves transcript)"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📨  Recruitment",
-        value="`/eoi` — apply · `/eoi_post` — post Apply button",
-        inline=False,
-    )
-    embed.add_field(
-        name="📻  Radio",
-        value="`/radio new` · `/radio view` · `/radio panel`",
-        inline=False,
-    )
-    embed.add_field(
-        name="🎭  Role Menu",
-        value="`/role_menu add` · `remove` · `list` · `post`",
-        inline=False,
-    )
-    embed.add_field(
-        name="🐉  Gang",
-        value=(
-            "`/gang dashboard` — whole gang at a glance · `/gang profile [@member]`\n"
-            "`/strike add` · `list` · `remove` · `clear` · `limit`\n"
-            "`/bank deposit` · `withdraw` · `balance`\n"
-            "`/war start` · `result` · `end` · `view`"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="⚙️  Settings",
-        value=(
-            "`/settings` — view all settings, or change one ⭐\n"
-            "`/settings setting:<name> channel:<#chan>` (or `role:<@role>`)\n"
-            "Leave channel/role empty to clear it"
-        ),
-        inline=False,
-    )
-    if interaction.client.user:
-        embed.set_thumbnail(url=interaction.client.user.display_avatar.url)
-    _brand(embed, interaction.guild, "Staff commands need the leadership role or admin")
-    await _send_v2(interaction, embed, ephemeral=True)
 
 
 # export everything (incl. _helpers) to the modules that build on this one
