@@ -4284,7 +4284,54 @@ async def gang_dashboard(interaction: discord.Interaction) -> None:
     embed.add_field(name="🎖️ Ranks", value=str(len(store.get("ranks", []))), inline=True)
     embed.add_field(name="📨 Tickets ever", value=str(len(store["orders"])), inline=True)
     _brand(embed, guild)
-    await interaction.response.send_message(embed=embed)
+
+    # Components V2 layout — built at call time so a problem can never take the
+    # bot down; any failure falls back to the classic embed above.
+    try:
+        wars_txt = "\n".join(
+            f"⚔️ vs **{w['enemy']}** — {w['wins']}–{w['losses']}" for w in active_wars[:5]
+        ) or "☮️ No active wars"
+        header = discord.ui.TextDisplay(
+            f"# 🐉 {guild.name}\n-# Gang dashboard · <t:{int(datetime.datetime.now(datetime.timezone.utc).timestamp())}:R>"
+        )
+        container = discord.ui.Container(accent_colour=discord.Colour(EMBED_COLOR))
+        if guild.icon:
+            container.add_item(
+                discord.ui.Section(header, accessory=discord.ui.Thumbnail(guild.icon.url))
+            )
+        else:
+            container.add_item(header)
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(
+            f"### 👥 People\n"
+            f"**{len(ranked_ids)}** ranked members · 💀 **{len(store['kos'])}** on KOS · "
+            f"⚠️ **{recent_strikes}** strikes (30d)"
+        ))
+        container.add_item(discord.ui.TextDisplay(
+            f"### 🏦 Bank\n# {_money(store['bank'].get('balance', 0))}"
+        ))
+        container.add_item(discord.ui.TextDisplay(
+            f"### 🎫 Tickets\n"
+            f"**{open_tickets}** open"
+            + (f" · 🟠 **{urgent}** high/urgent" if urgent else "")
+            + f" · ⭐ {f'{sum(rated) / len(rated):.1f}' if rated else '—'} avg · "
+            f"**{len(store['orders'])}** all-time"
+        ))
+        container.add_item(discord.ui.Separator())
+        container.add_item(discord.ui.TextDisplay(f"### ⚔️ Wars\n{wars_txt}"))
+        container.add_item(discord.ui.TextDisplay(
+            f"-# 📻 Radio `{freq or '—'}` · 🎖️ {len(store.get('ranks', []))} ranks"
+        ))
+        layout = discord.ui.LayoutView()
+        layout.add_item(container)
+        await interaction.response.send_message(view=layout)
+        return
+    except Exception as exc:  # noqa: BLE001 — any V2 issue → classic embed
+        log.warning("V2 dashboard failed, falling back to embed: %s", exc)
+    if not interaction.response.is_done():
+        await interaction.response.send_message(embed=embed)
+    else:
+        await interaction.followup.send(embed=embed)
 
 
 @gang_group.command(name="profile", description="Everything about one member")
