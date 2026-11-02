@@ -236,7 +236,7 @@ def _brand(
     return embed
 
 
-def _embed_to_v2(embed: discord.Embed) -> "discord.ui.LayoutView":
+def _embed_container(embed: discord.Embed) -> "discord.ui.Container":
     """Render a classic embed as a Components V2 container: big header (with the
     thumbnail beside it), body, inline fields packed into a grid-ish block,
     full-width fields as sub-headings, and the footer as small print."""
@@ -286,10 +286,114 @@ def _embed_to_v2(embed: discord.Embed) -> "discord.ui.LayoutView":
     if embed.footer and embed.footer.text:
         container.add_item(discord.ui.Separator(visible=False))
         container.add_item(discord.ui.TextDisplay(f"-# {embed.footer.text}"))
+    return container
 
+
+def _embed_to_v2(embed: discord.Embed) -> "discord.ui.LayoutView":
     layout = discord.ui.LayoutView()
-    layout.add_item(container)
+    layout.add_item(_embed_container(embed))
     return layout
+
+
+def _is_v2(message: "discord.Message | None") -> bool:
+    try:
+        return bool(message is not None and message.flags.components_v2)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _v2_layout(
+    embeds: "list[discord.Embed]",
+    view: "discord.ui.View | None" = None,
+    header: str | None = None,
+) -> "discord.ui.LayoutView":
+    """Embeds → V2 containers, plus the classic view's buttons/menus moved into
+    action rows (same items, same custom_ids, same callbacks)."""
+    layout = discord.ui.LayoutView(timeout=None)
+    if header:
+        layout.add_item(discord.ui.TextDisplay(header))
+    for e in embeds:
+        layout.add_item(_embed_container(e))
+    if view is not None:
+        items = list(view.children)
+        buf: list = []
+
+        def flush() -> None:
+            if buf:
+                layout.add_item(discord.ui.ActionRow(*buf))
+                buf.clear()
+
+        last_row = object()
+        for item in items:
+            if getattr(item, "width", 1) >= 5:  # menus take a whole row
+                flush()
+                layout.add_item(discord.ui.ActionRow(item))
+                last_row = object()
+                continue
+            if buf and (len(buf) == 5 or (item.row is not None and item.row != last_row)):
+                flush()
+            buf.append(item)
+            last_row = item.row
+        flush()
+    return layout
+
+
+async def _send_card(
+    dest,
+    embeds: "list[discord.Embed]",
+    make_view=None,
+    *,
+    header: str | None = None,
+    allowed_mentions: "discord.AllowedMentions | None" = None,
+    ephemeral: bool = False,
+):
+    """Post in the V2 look (with buttons); on any V2 failure, post the classic
+    embed + view instead. `dest` is a channel/user or an Interaction.
+    `make_view` builds a FRESH view each attempt. Returns the Message (or None
+    for interaction responses)."""
+    am = allowed_mentions or discord.AllowedMentions.none()
+    is_inter = isinstance(dest, discord.Interaction)
+    try:
+        layout = _v2_layout(embeds, make_view() if make_view else None, header)
+        if is_inter:
+            await dest.response.send_message(view=layout, allowed_mentions=am, ephemeral=ephemeral)
+            return None
+        return await dest.send(view=layout, allowed_mentions=am)
+    except discord.Forbidden:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning("V2 send failed (%s) — falling back to classic", exc)
+    kwargs = {"embeds": embeds, "allowed_mentions": am}
+    if make_view:
+        kwargs["view"] = make_view()
+    if header:
+        kwargs["content"] = header
+    if is_inter:
+        if dest.response.is_done():
+            return await dest.followup.send(ephemeral=ephemeral, wait=True, **kwargs)
+        await dest.response.send_message(ephemeral=ephemeral, **kwargs)
+        return None
+    return await dest.send(**kwargs)
+
+
+async def _edit_card(
+    message: "discord.Message",
+    embeds: "list[discord.Embed]",
+    make_view=None,
+    *,
+    interaction: "discord.Interaction | None" = None,
+    header: str | None = None,
+) -> None:
+    """Edit a card in whichever format it was posted in (V2 or classic).
+    Uses the interaction response when it's still open, else edits the message."""
+    if _is_v2(message):
+        kwargs = {"view": _v2_layout(embeds, make_view() if make_view else None, header)}
+    else:
+        kwargs = {"embeds": embeds, "view": make_view() if make_view else None}
+    if interaction is not None and not interaction.response.is_done():
+        await interaction.response.edit_message(**kwargs)
+    else:
+        await message.edit(**kwargs)
 
 
 async def _send_v2(
@@ -452,14 +556,17 @@ class EOIView(discord.ui.View):
             )
             return
 
-        record = self.votes.setdefault(msg.id, {})
-        previous = record.get(interaction.user.id)
-        record[interaction.user.id] = choice
-        yes, no = self._tally(msg.id)
+        store = guild_store(DATA, interaction.guild_id)
+        record = store.setdefault("eoi_votes", {}).setdefault(str(msg.id), {})
+        previous = record.get(str(interaction.user.id))
+        record[str(interaction.user.id)] = choice
+        save_data(DATA)
+        yes = sum(1 for v in record.values() if v == "yes")
+        no = sum(1 for v in record.values() if v == "no")
 
         embed = msg.embeds[0] if msg.embeds else discord.Embed()
         embed.set_footer(text=f"✅ {yes}   •   ❌ {no}")
-        await msg.edit(embed=embed, view=self)
+        await msg.edit(embed=embed, view=EOIView())
 
         if previous == choice:
             note = f"Your **{choice.upper()}** vote is already counted."
@@ -842,8 +949,11 @@ class RosterRefreshView(discord.ui.View):
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
         store = guild_store(DATA, interaction.guild_id)
-        await interaction.response.edit_message(
-            embed=_live_roster_embed(interaction.guild, store), view=self
+        await _edit_card(
+            interaction.message,
+            [_live_roster_embed(interaction.guild, store)],
+            RosterRefreshView,
+            interaction=interaction,
         )
 
 
@@ -1069,7 +1179,7 @@ async def roster_import_roles(interaction: discord.Interaction) -> None:
 async def roster_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
     embed = _live_roster_embed(interaction.guild, store)
-    await interaction.response.send_message(embed=embed, view=RosterRefreshView())
+    await _send_card(interaction, [embed], RosterRefreshView)
 
 
 @roster_group.command(
@@ -1474,9 +1584,11 @@ class MusterView(discord.ui.View):
             rec["attendees"].append(uid)
             note = "You're **in** the pool. ✅"
         save_data(DATA)
-        await interaction.response.edit_message(
-            embed=_muster_embed(rec["text"], rec["attendees"], rec.get("size", 0)),
-            view=self,
+        await _edit_card(
+            interaction.message,
+            [_brand(_muster_embed(rec["text"], rec["attendees"], rec.get("size", 0)), interaction.guild)],
+            MusterView,
+            interaction=interaction,
         )
         try:
             await interaction.followup.send(note, ephemeral=True)
@@ -1553,10 +1665,11 @@ class StaffDrawView(discord.ui.View):
             else None
         )
         head = "🎲 **KOS draw is ready** — pick the members, then approve."
-        pmsg = await interaction.channel.send(
-            content=f"{role.mention} {head}" if role else head,
-            embed=_proposal_embed(interaction.guild, prop),
-            view=RosterProposalView(),
+        pmsg = await _send_card(
+            interaction.channel,
+            [_proposal_embed(interaction.guild, prop)],
+            RosterProposalView,
+            header=f"{role.mention} {head}" if role else head,
             allowed_mentions=discord.AllowedMentions(roles=True),
         )
         store["kos_proposals"][str(pmsg.id)] = prop
@@ -1615,7 +1728,7 @@ async def _refresh_proposal(
         return
     try:
         msg = await ch.fetch_message(int(key))
-        await msg.edit(embed=_proposal_embed(guild, prop), view=RosterProposalView())
+        await _edit_card(msg, [_proposal_embed(guild, prop)], RosterProposalView)
     except discord.HTTPException:
         pass
 
@@ -1774,18 +1887,18 @@ class RosterProposalView(discord.ui.View):
         posted = []
         for ch in targets:
             try:
-                await ch.send(
-                    content=content,
-                    embed=final,
+                await _send_card(
+                    ch,
+                    [final],
+                    None,
+                    header=content,
                     allowed_mentions=discord.AllowedMentions(roles=True),
                 )
                 posted.append(ch.mention)
             except discord.HTTPException:
                 pass
 
-        await interaction.message.edit(
-            embed=_proposal_embed(guild, prop), view=None
-        )
+        await _edit_card(interaction.message, [_proposal_embed(guild, prop)], None)
         await interaction.followup.send(
             f"✅ Approved — posted to {', '.join(posted) or 'nowhere (check my permissions)'} "
             f"and gave **{len(prop['roster'])}** the KOS role.",
@@ -1822,8 +1935,11 @@ class RosterProposalView(discord.ui.View):
         prop["roster"] = pool[:size]
         prop["bench"] = pool[size:]
         save_data(DATA)
-        await interaction.response.edit_message(
-            embed=_proposal_embed(interaction.guild, prop), view=self
+        await _edit_card(
+            interaction.message,
+            [_proposal_embed(interaction.guild, prop)],
+            RosterProposalView,
+            interaction=interaction,
         )
 
     @discord.ui.button(
@@ -1945,10 +2061,11 @@ async def kos_start(
     pings = discord.AllowedMentions(roles=True)
     try:
         # fresh view instance per message — sharing the registered one breaks clicks
-        msg = await target.send(
-            content=ping,
-            embed=_muster_embed(text, [], size),
-            view=MusterView(),
+        msg = await _send_card(
+            target,
+            [_brand(_muster_embed(text, [], size), guild)],
+            MusterView,
+            header=ping,
             allowed_mentions=pings,
         )
     except discord.Forbidden:
@@ -1964,8 +2081,8 @@ async def kos_start(
         "channel_id": target.id,
     }
     try:
-        control = await staff.send(
-            embed=_draw_control_embed(target, size), view=StaffDrawView()
+        control = await _send_card(
+            staff, [_brand(_draw_control_embed(target, size), guild)], StaffDrawView
         )
     except discord.Forbidden:
         await interaction.response.send_message(
@@ -2215,7 +2332,8 @@ async def role_menu_post(
         "unselected will be removed.",
         color=EMBED_COLOR,
     )
-    await interaction.channel.send(embed=embed, view=SelfRoleView(options))
+    _brand(embed, interaction.guild)
+    await _send_card(interaction.channel, [embed], lambda: SelfRoleView(options))
     await interaction.response.send_message("Role menu posted. ✅", ephemeral=True)
 
 
@@ -2283,8 +2401,10 @@ class RadioPanelView(discord.ui.View):
 
         # refresh the panel to show the new frequency
         try:
-            await interaction.message.edit(
-                embed=_radio_panel_embed(freq, str(interaction.user)), view=self
+            await _edit_card(
+                interaction.message,
+                [_brand(_radio_panel_embed(freq, str(interaction.user)), interaction.guild)],
+                RadioPanelView,
             )
         except discord.HTTPException:
             pass
@@ -2366,8 +2486,10 @@ async def radio_panel(interaction: discord.Interaction) -> None:
         )
         return
     store = guild_store(DATA, interaction.guild_id)
-    await interaction.channel.send(
-        embed=_radio_panel_embed(store.get("radio_freq")), view=RadioPanelView()
+    await _send_card(
+        interaction.channel,
+        [_brand(_radio_panel_embed(store.get("radio_freq")), interaction.guild)],
+        RadioPanelView,
     )
     await interaction.response.send_message("Radio panel posted. 📻", ephemeral=True)
 
@@ -2411,7 +2533,8 @@ async def eoi_post(
         "leadership reviews and votes on every application.",
         color=EMBED_COLOR,
     )
-    await interaction.channel.send(embed=embed, view=EOIPromptView())
+    _brand(embed, interaction.guild)
+    await _send_card(interaction.channel, [embed], EOIPromptView)
     await interaction.response.send_message("EOI prompt posted. ✅", ephemeral=True)
 
 
@@ -2592,6 +2715,32 @@ def _order_embed(order: dict[str, Any]) -> discord.Embed:
     if order.get("notes"):
         embed.add_field(name="Notes", value=order["notes"], inline=False)
     return embed
+
+
+def _order_welcome_embed(order: dict[str, Any], guild: discord.Guild) -> discord.Embed:
+    ttype = order.get("type") or "Order"
+    welcome = discord.Embed(
+        description=(
+            f"👋 Thanks for your **{ttype}** order, <@{order['user_id']}>!\n\n"
+            "Staff will be with you shortly. Add anything else you need below — "
+            "prices, timing, drop spot. A staff member will mark it paid once "
+            "sorted, then close the ticket (you'll get a transcript in your DMs)."
+        ),
+        color=EMBED_COLOR,
+    )
+    member = guild.get_member(order["user_id"])
+    if member is not None:
+        welcome.set_author(name=member.display_name, icon_url=member.display_avatar.url)
+    welcome.add_field(
+        name="Staff tools",
+        value="🙋 Claim · 💰 Mark Paid · 🚩 Priority · 🔒 Close · `/ticket add` · `/close [reason]`",
+        inline=False,
+    )
+    return welcome
+
+
+def _order_cards(order: dict[str, Any], guild: discord.Guild) -> list[discord.Embed]:
+    return [_order_welcome_embed(order, guild), _brand(_order_embed(order), guild)]
 
 
 def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
@@ -3044,29 +3193,11 @@ class OrderModal(discord.ui.Modal):
         save_data(DATA)
 
         ping = f"<@{interaction.user.id}>" + (f" {lead.mention}" if lead else "")
-        welcome = discord.Embed(
-            description=(
-                f"👋 Thanks for your **{self.ticket_type}** order, "
-                f"<@{interaction.user.id}>!\n\n"
-                "Staff will be with you shortly. Add anything else you need below — "
-                "prices, timing, drop spot. A staff member will mark it paid once "
-                "sorted, then close the ticket (you'll get a transcript in your DMs)."
-            ),
-            color=EMBED_COLOR,
-        )
-        welcome.set_author(
-            name=interaction.user.display_name,
-            icon_url=interaction.user.display_avatar.url,
-        )
-        welcome.add_field(
-            name="Staff tools",
-            value="🙋 Claim · 💰 Mark Paid · 🚩 Priority · 🔒 Close · `/ticket add` · `/close [reason]`",
-            inline=False,
-        )
-        msg = await channel.send(
-            content=ping,
-            embeds=[welcome, _brand(_order_embed(order), guild)],
-            view=OrderTicketView(),
+        msg = await _send_card(
+            channel,
+            _order_cards(order, guild),
+            OrderTicketView,
+            header=ping,
             allowed_mentions=discord.AllowedMentions(users=True, roles=True),
         )
         order["message_id"] = msg.id
@@ -3173,11 +3304,8 @@ class OrderTicketView(discord.ui.View):
         prev = order.get("claimed_by")
         order["claimed_by"] = interaction.user.id
         save_data(DATA)
-        await interaction.message.edit(
-            embeds=[interaction.message.embeds[0], _brand(_order_embed(order), interaction.guild)]
-            if len(interaction.message.embeds) > 1
-            else [_brand(_order_embed(order), interaction.guild)],
-            view=self,
+        await _edit_card(
+            interaction.message, _order_cards(order, interaction.guild), OrderTicketView
         )
         verb = "reassigned to" if prev and prev != interaction.user.id else "claimed by"
         await interaction.channel.send(f"🙋 Ticket {verb} {interaction.user.mention}.")
@@ -3221,11 +3349,8 @@ class OrderTicketView(discord.ui.View):
             return
         order["paid"] = True
         save_data(DATA)
-        await interaction.message.edit(
-            embeds=[interaction.message.embeds[0], _brand(_order_embed(order), interaction.guild)]
-            if len(interaction.message.embeds) > 1
-            else [_brand(_order_embed(order), interaction.guild)],
-            view=self,
+        await _edit_card(
+            interaction.message, _order_cards(order, interaction.guild), OrderTicketView
         )
         await interaction.followup.send(
             f"Order #{order['id']} marked **paid**. 💰", ephemeral=True
@@ -3267,10 +3392,11 @@ class OrderTicketView(discord.ui.View):
         cur = order.get("priority", "normal")
         order["priority"] = keys[(keys.index(cur) + 1) % len(keys)] if cur in keys else "high"
         save_data(DATA)
-        embeds = interaction.message.embeds
-        new_card = _brand(_order_embed(order), interaction.guild)
-        await interaction.response.edit_message(
-            embeds=[embeds[0], new_card] if len(embeds) > 1 else [new_card], view=self
+        await _edit_card(
+            interaction.message,
+            _order_cards(order, interaction.guild),
+            OrderTicketView,
+            interaction=interaction,
         )
         await send_log(
             interaction.guild, store,
@@ -3547,7 +3673,7 @@ async def ticket_panel(
     if interaction.guild.icon:
         embed.set_thumbnail(url=interaction.guild.icon.url)
     _brand(embed, interaction.guild, "Tickets are private · one click to open")
-    await interaction.channel.send(embed=embed, view=TicketPanelView(options))
+    await _send_card(interaction.channel, [embed], lambda: TicketPanelView(options))
     await interaction.response.send_message("Ticket panel posted. ✅", ephemeral=True)
 
 
