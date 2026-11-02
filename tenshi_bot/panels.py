@@ -392,9 +392,9 @@ _HELP_PAGES: dict[str, tuple[str, str, str]] = {
                 "`/ticket type_add` · `type_remove` · `type_list` · `set_category`\n"
                 "`/ticket panel` — post the order menu · `/ticket toggle` — open/close orders\n"
                 "`/ticket board` — open orders, urgent first\n"
-                "`/ticket stats` — analytics, rating spread, staff leaderboard\n"
+                "`/ticket stats` — analytics + staff leaderboard\n"
                 "`/ticket autoclose <hours>` · `/ticket add` · `/ticket remove`\n"
-                "`/close [reason]` — HTML transcript + ⭐ rating DM\n"
+                "`/close [reason]` — transcript to staff + a short DM to the customer\n"
                 "In a ticket: 🙋 Claim · 💰 Paid · 🚩 Priority · 🔒 Close"),
     "community": ("📨", "Recruitment · Radio · Roles",
                   "`/eoi` — apply · `/eoi_post` — post Apply button (votes saved)\n"

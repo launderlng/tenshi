@@ -422,7 +422,6 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     rank_rows.sort(key=lambda x: -x[2])
     orders = store["orders"]
     open_o = [o for o in orders if o.get("status", "open") != "closed"]
-    rated = [o["rating"] for o in orders if o.get("rating")]
     recent_strikes = sum(1 for s in store["strikes"] if s["ts"] >= now - 30 * 86400)
     bank = store["bank"]
     txs = bank.get("tx", [])
@@ -466,10 +465,9 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
         money.add_field(name="📈 Trend", value="*No transactions yet — `/bank deposit` to start.*", inline=False)
 
     daily = _daily_counts([o["created_ts"] for o in orders if o.get("created_ts")])
-    avg = f"{sum(rated) / len(rated):.1f}⭐" if rated else "—"
     ops = discord.Embed(
         title="🎫  Tickets",
-        description=f"**{len(open_o)}** open · **{len(orders)}** all-time · avg {avg}",
+        description=f"**{len(open_o)}** open · **{len(orders)}** all-time",
         color=0x0EA5E9,
     )
     ops.add_field(
@@ -568,10 +566,9 @@ async def gang_profile(interaction: discord.Interaction, member: discord.Member 
         embed.add_field(name="📅 Joined", value=f"<t:{int(member.joined_at.timestamp())}:R>", inline=True)
     embed.add_field(name="🎫 Tickets opened", value=str(len(tickets)), inline=True)
     if handled:
-        r = [o["rating"] for o in handled if o.get("rating")]
         embed.add_field(
             name="🙋 Tickets handled",
-            value=f"{len(handled)}" + (f" · {sum(r) / len(r):.1f}⭐" if r else ""),
+            value=str(len(handled)),
             inline=True,
         )
     _brand(embed, interaction.guild)

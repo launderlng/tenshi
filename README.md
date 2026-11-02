@@ -36,10 +36,10 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `/ticket board` | Active orders grouped by type, paid/unpaid | Staff |
 | `/close [reason]` | Close the ticket you're in — the reason and how long it was open go in the transcript, the customer's DM and the log | Staff or ticket owner |
 | `/ticket add @member` / `/ticket remove @member` | Let someone into the ticket you're in, or take them out | Staff |
-| `/ticket stats` | Open/closed/paid counts, average rating, average time open, and a staff leaderboard | Staff |
+| `/ticket stats` | Open/closed/paid counts, tickets-per-day graph, average time open, and a staff leaderboard | Staff |
 | `/ticket autoclose <hours>` | Warn then auto-close tickets with no messages for that long (0 = off) | Leadership |
 | (in ticket) 🚩 Priority | Cycle Low → Normal → High → Urgent; the board sorts urgent first | Staff |
-| (after close) ⭐ rating | Customer gets a DM with an HTML transcript and 1–5 star buttons; ratings feed `/ticket stats` | Customer |
+| (after close) DM | Customer gets one short DM (ticket #, paid, time open, items, reason) with the chat log attached; staff get the full HTML + text transcript | Customer |
 | (in ticket) 💰 Mark Paid · 🔒 Close | Mark paid, or close → transcript then delete | Staff |
 
 ### Recruitment · Radio · Roles
@@ -53,8 +53,8 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 ### Gang
 | Command | What it does | Who |
 |---|---|---|
-| `/gang dashboard` | One-glance overview: ranked members, KOS, bank, open/urgent tickets, avg rating, strikes (30d), wars, radio | Everyone |
-| `/gang profile [@member]` | Rank, KOS status, strikes bar, join date, tickets opened/handled + rating | Everyone |
+| `/gang dashboard` | One-glance overview: ranked members, KOS, bank, open/urgent tickets, strikes (30d), wars, radio | Everyone |
+| `/gang profile [@member]` | Rank, KOS status, strikes bar, join date, tickets opened/handled | Everyone |
 | `/strike add @member <reason>` | Give a strike (DMs them, warns at the limit) | Leadership |
 | `/strike list [@member]` / `remove <id>` / `clear @member` / `limit <n>` | Strike board, per-member history, remove/clear, set the limit (default 3) | Leadership (list: everyone) |
 | `/bank deposit` / `withdraw <amount> [note]` / `balance` | Gang bank ledger with running balance and recent activity | Leadership (balance: everyone) |
@@ -77,7 +77,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `kos.py` | `/kos` — KOS list and the sign-up → draw → approve flow |
 | `settings.py` | `/settings` |
 | `panels.py` | `/role_menu`, `/radio`, `/eoi`, `/eoi_post`, `/gang_help` |
-| `tickets.py` | Ticket system: panel, tickets, transcripts, ratings, priority, auto-close, stats |
+| `tickets.py` | Ticket system: panel, tickets, transcripts, priority, auto-close, stats |
 | `gang.py` | `/gang`, `/strike`, `/bank`, `/war` |
 
 ## Setup

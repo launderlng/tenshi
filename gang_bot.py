@@ -7,7 +7,7 @@ Run with `python gang_bot.py`. Features live in the tenshi_bot package:
   tenshi_bot/kos.py — /kos — KOS list, sign-up → draw → staff approval → announce flow.
   tenshi_bot/settings.py — /settings — channel & role configuration.
   tenshi_bot/panels.py — /role_menu, /radio, /eoi, /eoi_post and /gang_help.
-  tenshi_bot/tickets.py — Ticket / order system: panels, tickets, transcripts, ratings, priority, auto-close, stats.
+  tenshi_bot/tickets.py — Ticket / order system: panels, tickets, transcripts, priority, auto-close, stats.
   tenshi_bot/gang.py — /gang dashboard & profile, /strike, /bank, /war.
 """
 

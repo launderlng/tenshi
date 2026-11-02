@@ -1,4 +1,4 @@
-"""Ticket / order system: panels, tickets, transcripts, ratings, priority, auto-close, stats."""
+"""Ticket / order system: panels, tickets, transcripts, priority, auto-close, stats."""
 
 from .core import *  # noqa: F401,F403
 from .roster import *  # noqa: F401,F403
@@ -173,6 +173,32 @@ def _open_for(order: dict | None) -> str | None:
 
 # ---- transcripts ------------------------------------------------------------ #
 
+def _component_text(components) -> list[str]:
+    """Pull readable text out of a V2 message (containers / sections / text
+    blocks), dropping markdown heading markers so transcripts read cleanly."""
+    out: list[str] = []
+
+    def walk(c) -> None:
+        content = getattr(c, "content", None)
+        if isinstance(content, str) and content.strip():
+            lines = []
+            for line in content.split("\n"):
+                for marker in ("### ", "## ", "# ", "-# "):
+                    if line.startswith(marker):
+                        line = line[len(marker):]
+                        break
+                if line.strip():
+                    lines.append(line)
+            if lines:
+                out.append(" / ".join(lines))
+        for ch in getattr(c, "children", None) or []:
+            walk(ch)
+
+    for c in components or []:
+        walk(c)
+    return out
+
+
 async def _collect_history(channel: discord.TextChannel) -> list[dict[str, Any]]:
     """Read the whole channel once; both transcript formats render from this."""
     rows: list[dict[str, Any]] = []
@@ -189,6 +215,9 @@ async def _collect_history(channel: discord.TextChannel) -> list[dict[str, Any]]
                     parts.append(f"{f.name}: {f.value}")
                 if parts:
                     embeds.append(parts)
+            v2_text = _component_text(m.components)
+            if v2_text:
+                embeds.append(v2_text)
             rows.append(
                 {
                     "ts": m.created_at,
@@ -320,7 +349,7 @@ async def _close_ticket_core(
     order: dict | None,
     reason: str | None = None,
 ) -> None:
-    """Transcript (HTML + text) → transcript channel, DM + rating → customer,
+    """Transcript (HTML + text) → transcript channel, short DM → customer,
     log, then delete the channel. Works from a click or the auto-close loop."""
     oid = order["id"] if order else channel.name
     ttype = (order.get("type") if order else "Ticket") or "Ticket"
@@ -383,29 +412,29 @@ async def _close_ticket_core(
                 member = None
         if member is not None:
             dm = discord.Embed(
-                title=f"🔒  Your {ttype} ticket was closed",
-                description=(
-                    f"Ticket **#{oid}** in **{guild.name}** has been closed.\n"
-                    "**How did we do?** Tap a rating below. ⭐"
-                ),
+                title="🔒  Ticket closed",
+                description=f"Your **{ttype}** ticket in **{guild.name}** is closed. Thanks!",
                 color=EMBED_COLOR,
                 timestamp=datetime.datetime.now(datetime.timezone.utc),
             )
+            dm.add_field(name="Ticket", value=f"#{oid}", inline=True)
+            dm.add_field(name="Paid", value="Yes" if order.get("paid") else "No", inline=True)
+            if open_for:
+                dm.add_field(name="Open for", value=open_for, inline=True)
             if order.get("guns"):
-                dm.add_field(name="Items", value=order["guns"], inline=False)
-            dm.add_field(name="Paid", value="🟢 Yes" if order.get("paid") else "🔴 No", inline=True)
+                dm.add_field(name="Items", value=order["guns"][:1024], inline=False)
             if reason:
                 dm.add_field(name="Reason", value=reason[:1024], inline=False)
             if guild.icon:
-                dm.set_thumbnail(url=guild.icon.url)
-            dm.set_footer(text=f"{guild.name} · transcript attached")
+                dm.set_author(name=guild.name, icon_url=guild.icon.url)
+            else:
+                dm.set_author(name=guild.name)
+            dm.set_footer(text="Full chat log attached")
             try:
-                dm_msg = await member.send(embed=dm, files=files(), view=RatingView())
-                DATA.setdefault("rating_msgs", {})[str(dm_msg.id)] = {
-                    "guild_id": guild.id,
-                    "order_id": order["id"],
-                }
-                save_data(DATA)
+                await member.send(
+                    embed=dm,
+                    file=discord.File(io.BytesIO(text.encode("utf-8")), filename=f"ticket-{oid}.txt"),
+                )
             except discord.HTTPException:
                 pass  # customer has DMs closed
 
@@ -1252,7 +1281,6 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
     closed = [o for o in orders if o.get("status") == "closed"]
     open_n = len(orders) - len(closed)
     paid = sum(1 for o in orders if o.get("paid"))
-    rated = [o["rating"] for o in closed if o.get("rating")]
     durations = [
         o["closed_ts"] - o["created_ts"] for o in closed if o.get("closed_ts") and o.get("created_ts")
     ]
@@ -1267,30 +1295,19 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
         description=f"**{open_n}** open · **{len(closed)}** closed · 💰 **{paid}** paid",
         color=EMBED_COLOR,
     )
-    summary.add_field(name="⭐ Avg rating", value=f"**{sum(rated) / len(rated):.1f}** ({len(rated)})" if rated else "—")
     summary.add_field(name="⏱️ Avg time open", value=fmt_dur(sum(durations) / len(durations)) if durations else "—")
     summary.add_field(
         name="📈 Opened per day · last 14d",
         value=f"`{_spark(daily)}`  peak **{max(daily)}**/day · **{sum(daily)}** total",
         inline=False,
     )
-    if rated:
-        summary.add_field(
-            name="⭐ Rating spread",
-            value="\n".join(
-                f"`{k}★` `{_bar(rated.count(k), len(rated), 12)}` {rated.count(k)}" for k in range(5, 0, -1)
-            ),
-            inline=False,
-        )
 
     board: dict[int, dict[str, Any]] = {}
     for o in closed:
         h = o.get("claimed_by")
         if h:
-            b = board.setdefault(h, {"n": 0, "r": []})
+            b = board.setdefault(h, {"n": 0})
             b["n"] += 1
-            if o.get("rating"):
-                b["r"].append(o["rating"])
     lb = discord.Embed(title="🏆  Staff Leaderboard", color=0xF59E0B)
     if board:
         medals = ["🥇", "🥈", "🥉"]
@@ -1299,7 +1316,6 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
         lb.description = "\n".join(
             f"{medals[i] if i < 3 else f'`{i + 1}.`'} <@{uid}>\n"
             f"`{_bar(b['n'], top, 12)}` **{b['n']}** handled"
-            + (f" · {sum(b['r']) / len(b['r']):.1f}⭐" if b["r"] else "")
             for i, (uid, b) in enumerate(ranked)
         )
     else:
