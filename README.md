@@ -50,6 +50,16 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `/radio new` / `view` / `panel` | Roll a new frequency / show it / post a reroll button | Leadership / Everyone |
 | `/role_menu add` / `remove` / `list` / `post` | Manage & post a self-serve role dropdown | Leadership |
 
+### Gang
+| Command | What it does | Who |
+|---|---|---|
+| `/gang dashboard` | One-glance overview: ranked members, KOS, bank, open/urgent tickets, avg rating, strikes (30d), wars, radio | Everyone |
+| `/gang profile [@member]` | Rank, KOS status, strikes bar, join date, tickets opened/handled + rating | Everyone |
+| `/strike add @member <reason>` | Give a strike (DMs them, warns at the limit) | Leadership |
+| `/strike list [@member]` / `remove <id>` / `clear @member` / `limit <n>` | Strike board, per-member history, remove/clear, set the limit (default 3) | Leadership (list: everyone) |
+| `/bank deposit` / `withdraw <amount> [note]` / `balance` | Gang bank ledger with running balance and recent activity | Leadership (balance: everyone) |
+| `/war start <enemy>` / `result <enemy> win\|loss` / `end <enemy>` / `view` | Track wars with W/L, win rate and a result log | Leadership (view: everyone) |
+
 ### Settings
 | Command | What it does | Who |
 |---|---|---|
