@@ -332,6 +332,10 @@ async def _send_card(
     try:
         layout = _v2_layout(embeds, make_view() if make_view else None, header)
         if is_inter:
+            if dest.response.is_done():
+                return await dest.followup.send(
+                    view=layout, allowed_mentions=am, ephemeral=ephemeral, wait=True
+                )
             await dest.response.send_message(view=layout, allowed_mentions=am, ephemeral=ephemeral)
             return None
         return await dest.send(view=layout, allowed_mentions=am)
@@ -521,6 +525,26 @@ def youtube_thumbnail(url: str | None) -> str | None:
 # EOI voting view (persistent buttons)
 # --------------------------------------------------------------------------- #
 
+_EOI_TIMERS = [
+    ("1 hour", 1),
+    ("6 hours", 6),
+    ("12 hours", 12),
+    ("24 hours", 24),
+    ("2 days", 48),
+    ("3 days", 72),
+    ("7 days", 168),
+]
+_EOI_TIMER_FIELD = "⏱️ Voting closes"
+
+
+def _set_embed_field(embed: discord.Embed, name: str, value: str, inline: bool = False) -> None:
+    for i, f in enumerate(embed.fields):
+        if f.name == name:
+            embed.set_field_at(i, name=name, value=value, inline=inline)
+            return
+    embed.add_field(name=name, value=value, inline=inline)
+
+
 class EOIView(discord.ui.View):
     """Yes / No voting buttons attached to an EOI application embed.
 
@@ -566,6 +590,9 @@ class EOIView(discord.ui.View):
             return
 
         store = guild_store(DATA, interaction.guild_id)
+        if store.get("eoi_timers", {}).get(str(msg.id), {}).get("done"):
+            await interaction.followup.send("🔒 Voting on this EOI has closed.", ephemeral=True)
+            return
         record = store.setdefault("eoi_votes", {}).setdefault(str(msg.id), {})
         previous = record.get(str(interaction.user.id))
         record[str(interaction.user.id)] = choice
@@ -639,6 +666,43 @@ class EOIView(discord.ui.View):
     ) -> None:
         await self._handle_vote(interaction, "no")
 
+    @discord.ui.select(
+        custom_id="eoi:timer",
+        placeholder="⏱️  Leadership: choose when voting closes…",
+        row=1,
+        options=[
+            discord.SelectOption(label=f"Close voting in {label}", value=str(h), emoji="⏱️")
+            for label, h in _EOI_TIMERS
+        ],
+    )
+    async def set_timer(
+        self, interaction: discord.Interaction, select: discord.ui.Select
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only leadership can set the EOI timer.", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        msg = interaction.message
+        store = guild_store(DATA, interaction.guild_id)
+        rec = store.setdefault("eoi_timers", {}).setdefault(str(msg.id), {})
+        if rec.get("done"):
+            await interaction.followup.send("🔒 Voting on this EOI already closed.", ephemeral=True)
+            return
+        hours = int(select.values[0])
+        ends = int(datetime.datetime.now(datetime.timezone.utc).timestamp()) + hours * 3600
+        rec.update({"ends": ends, "channel_id": interaction.channel_id, "set_by": interaction.user.id})
+        save_data(DATA)
+        embed = msg.embeds[0] if msg.embeds else discord.Embed()
+        _set_embed_field(embed, _EOI_TIMER_FIELD, f"<t:{ends}:R> · <t:{ends}:f>")
+        await msg.edit(embed=embed, view=EOIView())
+        await interaction.followup.send(f"⏱️ Voting closes <t:{ends}:R>.", ephemeral=True)
+        await send_log(
+            interaction.guild, store, f"⏱️ EOI voting timer set — closes <t:{ends}:R>.",
+            category="eoi", actor=interaction.user,
+        )
+
 
 # single shared view instance so vote state is consistent
 EOI_VIEW = EOIView()
@@ -648,37 +712,65 @@ EOI_VIEW = EOIView()
 # EOI application modal (the form in your screenshot + a YouTube link)
 # --------------------------------------------------------------------------- #
 
-class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
-    discord_name = discord.ui.TextInput(
-        label="Discord",
-        placeholder="Your Discord username / tag",
-        max_length=100,
+_EOI_ROLES = [
+    ("Shooter", "🔫"),
+    ("Driver / Getaway", "🚗"),
+    ("Hacker / Tech", "💻"),
+    ("Crafter / Supplier", "🛠️"),
+    ("Money / Business", "💰"),
+    ("Whatever's needed", "🧩"),
+]
+_EOI_ACTIVITY = [
+    ("Every day", "🔥"),
+    ("Most days", "📅"),
+    ("A few times a week", "🕒"),
+    ("Weekends", "🎉"),
+    ("Casual", "😴"),
+]
+
+
+class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest"):
+    ign = discord.ui.Label(
+        text="In-game name",
+        description="Your FiveM character / RP name",
+        component=discord.ui.TextInput(placeholder="e.g. Kenji Tanaka", max_length=100),
     )
-    ign = discord.ui.TextInput(
-        label="Name (in-game)",
-        placeholder="Your FiveM character / RP name",
-        max_length=100,
+    role = discord.ui.Label(
+        text="What role do you want?",
+        description="Pick what fits you best",
+        component=discord.ui.Select(
+            placeholder="Choose a role…",
+            required=True,
+            options=[discord.SelectOption(label=l, value=l, emoji=e) for l, e in _EOI_ROLES],
+        ),
     )
-    montage = discord.ui.TextInput(
-        label="Montage(s) — one YouTube link per line",
-        placeholder="https://youtube.com/...\nhttps://youtu.be/...",
-        style=discord.TextStyle.paragraph,
-        required=False,
-        max_length=600,
+    activity = discord.ui.Label(
+        text="How active are you?",
+        component=discord.ui.Select(
+            placeholder="Choose how often you're on…",
+            required=True,
+            options=[discord.SelectOption(label=l, value=l, emoji=e) for l, e in _EOI_ACTIVITY],
+        ),
     )
-    armoury = discord.ui.TextInput(
-        label="Armoury",
-        placeholder="Weapons / loadout you run",
-        style=discord.TextStyle.paragraph,
-        required=False,
-        max_length=500,
+    montage = discord.ui.Label(
+        text="Montage(s)",
+        description="One YouTube link per line — optional",
+        component=discord.ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            placeholder="https://youtu.be/…",
+            required=False,
+            max_length=600,
+        ),
     )
-    extra = discord.ui.TextInput(
-        label="Vouches / Previous Gangs",
-        placeholder="Who can vouch for you + gangs you've been in",
-        style=discord.TextStyle.paragraph,
-        required=False,
-        max_length=500,
+    experience = discord.ui.Label(
+        text="Experience",
+        description="Your loadout, who can vouch for you, gangs you've been in",
+        component=discord.ui.TextInput(
+            style=discord.TextStyle.paragraph,
+            placeholder="Loadout · vouches · previous gangs…",
+            required=False,
+            max_length=900,
+        ),
     )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
@@ -689,7 +781,7 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
         if channel_id is None:
             await interaction.followup.send(
                 "No EOI channel is set yet. Ask leadership to set one from "
-                "`/settings` → EOI channel.",
+                "`/settings channel` → 📥 EOI channel.",
                 ephemeral=True,
             )
             return
@@ -703,44 +795,62 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             )
             return
 
+        user = interaction.user
+        ign = self.ign.component.value.strip()
+        role = (self.role.component.values or ["—"])[0]
+        activity = (self.activity.component.values or ["—"])[0]
+        role_emoji = dict(_EOI_ROLES).get(role, "🎯")
+        act_emoji = dict(_EOI_ACTIVITY).get(activity, "🔥")
+
         embed = discord.Embed(
-            title="📨 New Expression of Interest",
+            title=f"📨  Expression of Interest — {ign}",
+            description=f"{user.mention} wants in as {role_emoji} **{role}**",
             color=EMBED_COLOR,
             timestamp=datetime.datetime.now(datetime.timezone.utc),
         )
-        embed.add_field(name="👤 Discord", value=self.discord_name.value, inline=True)
-        embed.add_field(name="🎮 Name", value=self.ign.value, inline=True)
-        montage_raw = self.montage.value.strip()
+        embed.set_author(name=user.display_name, icon_url=user.display_avatar.url)
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="🎮 In-game", value=ign or "—", inline=True)
+        embed.add_field(name="🎯 Role", value=f"{role_emoji} {role}", inline=True)
+        embed.add_field(name="⏱️ Activity", value=f"{act_emoji} {activity}", inline=True)
+        embed.add_field(
+            name="👤 Applicant",
+            value=f"`{user}` · `{user.id}`",
+            inline=False,
+        )
+        embed.add_field(
+            name="🗓️ Account made", value=f"<t:{int(user.created_at.timestamp())}:R>", inline=True
+        )
+        joined = getattr(user, "joined_at", None)
+        embed.add_field(
+            name="📥 Joined server",
+            value=f"<t:{int(joined.timestamp())}:R>" if joined else "—",
+            inline=True,
+        )
+        montage_raw = self.montage.component.value.strip()
         links = [ln.strip() for ln in montage_raw.splitlines() if ln.strip()]
-        if links:
-            montage_val = "\n".join(f"• {ln}" for ln in links)
-        else:
-            montage_val = "—"
-        label = f"🎬 Montage{'s' if len(links) > 1 else ''}"
-        embed.add_field(name=label, value=montage_val[:1024], inline=False)
         embed.add_field(
-            name="🔫 Armoury",
-            value=self.armoury.value.strip() or "—",
+            name=f"🎬 Montage{'s' if len(links) > 1 else ''}",
+            value="\n".join(f"• {ln}" for ln in links)[:1024] if links else "—",
             inline=False,
         )
         embed.add_field(
-            name="🤝 Vouches / Previous Gangs",
-            value=self.extra.value.strip() or "—",
+            name="🧾 Experience",
+            value=self.experience.component.value.strip()[:1024] or "—",
             inline=False,
         )
-        embed.set_author(
-            name=str(interaction.user),
-            icon_url=interaction.user.display_avatar.url,
-        )
-        # Preview the first montage's YouTube thumbnail as the embed image.
+        # Preview the first montage's YouTube thumbnail as the big image.
         thumb = youtube_thumbnail(montage_raw or None)
         if thumb:
             embed.set_image(url=thumb)
+        embed.add_field(
+            name=_EOI_TIMER_FIELD, value="*Not set — leadership pick a timer below*", inline=False
+        )
         embed.set_footer(text="✅ 0   •   ❌ 0")
 
         ping_id = store.get("eoi_ping_role_id")
         ping_role = interaction.guild.get_role(ping_id) if ping_id else None
-        await channel.send(
+        posted = await channel.send(
             content=f"{ping_role.mention} 📨 New EOI from {interaction.user.mention}"
             if ping_role
             else None,
@@ -748,6 +858,13 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             view=EOIView(),
             allowed_mentions=discord.AllowedMentions(roles=True, users=False),
         )
+        store.setdefault("eoi_apps", {})[str(posted.id)] = {
+            "user_id": user.id,
+            "ign": ign,
+            "role": role,
+            "ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
+        }
+        save_data(DATA)
         await interaction.followup.send(
             f"Your EOI has been sent to {channel.mention}. Good luck. 🫡",
             ephemeral=True,
@@ -759,10 +876,129 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             category="eoi",
             actor=interaction.user,
             fields=[
-                ("Name", self.ign.value, True),
-                ("Discord", self.discord_name.value, True),
+                ("In-game", ign or "—", True),
+                ("Role", role, True),
+                ("Activity", activity, True),
             ],
         )
+
+
+# ---- EOI voting timer ------------------------------------------------------- #
+
+async def _close_eoi(guild: discord.Guild, store: dict[str, Any], mid: int, rec: dict) -> None:
+    """Tally votes, lock the EOI post, and — if it passed — welcome them into
+    the gang in the EOI channel (+ roster role). Denials are quiet: post is
+    marked and the applicant gets a DM."""
+    ch = guild.get_channel(rec.get("channel_id") or 0)
+    if ch is None:
+        return
+    votes = store.get("eoi_votes", {}).get(str(mid), {})
+    yes = sum(1 for v in votes.values() if v == "yes")
+    no = sum(1 for v in votes.values() if v == "no")
+    passed = yes > no
+    app = store.get("eoi_apps", {}).get(str(mid), {})
+    uid = app.get("user_id")
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+
+    msg = None
+    try:
+        msg = await ch.fetch_message(mid)
+    except discord.HTTPException:
+        pass
+    if msg is not None and msg.embeds:
+        e = msg.embeds[0]
+        e.colour = discord.Colour(0x22C55E if passed else 0x6B7280)
+        e.title = (("✅  ACCEPTED · " if passed else "❌  DENIED · ") + (e.title or "").replace("📨  ", ""))[:256]
+        _set_embed_field(e, _EOI_TIMER_FIELD, f"🔒 Closed <t:{now}:R>")
+        _set_embed_field(
+            e, "🗳️ Result",
+            f"{'✅ **Accepted**' if passed else '❌ **Denied**'} — ✅ {yes} · ❌ {no}",
+        )
+        e.set_footer(text=f"✅ {yes}   •   ❌ {no}   •   voting closed")
+        try:
+            await msg.edit(embed=e, view=None)
+        except discord.HTTPException:
+            pass
+
+    member = guild.get_member(uid) if uid else None
+    if member is None and uid:
+        try:
+            member = await guild.fetch_member(uid)
+        except discord.HTTPException:
+            member = None
+
+    if passed:
+        ann = discord.Embed(
+            title="🎉  Welcome to the gang!",
+            description=(
+                f"<@{uid}> has been **made into the gang**." if uid else "An applicant made it in."
+            ) + f"\n-# Final vote: ✅ {yes} · ❌ {no}",
+            color=0x22C55E,
+        )
+        if member is not None:
+            ann.set_thumbnail(url=member.display_avatar.url)
+        _brand(ann, guild)
+        try:
+            await ch.send(
+                content=f"<@{uid}>" if uid else None,
+                embed=ann,
+                reference=msg.to_reference(fail_if_not_exists=False) if msg else None,
+                allowed_mentions=discord.AllowedMentions(users=True),
+            )
+        except discord.HTTPException:
+            pass
+        role_id = store.get("roster_role_id")
+        role = guild.get_role(role_id) if role_id else None
+        if member is not None and role is not None:
+            try:
+                await member.add_roles(role, reason="EOI accepted")
+            except discord.HTTPException:
+                pass
+
+    if member is not None:
+        try:
+            await member.send(
+                embed=discord.Embed(
+                    title="🎉 You're in!" if passed else "Your application",
+                    description=(
+                        f"Your EOI for **{guild.name}** was **accepted** — welcome to the gang."
+                        if passed
+                        else f"Your EOI for **{guild.name}** wasn't accepted this time."
+                    ),
+                    color=0x22C55E if passed else 0x6B7280,
+                )
+            )
+        except discord.HTTPException:
+            pass
+    await send_log(
+        guild, store,
+        f"{'✅' if passed else '❌'} EOI {'accepted' if passed else 'denied'} — "
+        f"{f'<@{uid}>' if uid else 'applicant'} (✅ {yes} · ❌ {no}).",
+        category="eoi",
+    )
+
+
+@tasks.loop(minutes=1)
+async def eoi_timer_loop() -> None:
+    now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    for guild in bot.guilds:
+        store = guild_store(DATA, guild.id)
+        for mid, rec in list(store.get("eoi_timers", {}).items()):
+            if rec.get("done") or not rec.get("ends") or rec["ends"] > now:
+                continue
+            rec["done"] = True
+            save_data(DATA)
+            await _close_eoi(guild, store, int(mid), rec)
+
+
+@eoi_timer_loop.before_loop
+async def _before_eoi_loop() -> None:
+    await bot.wait_until_ready()
+
+
+@eoi_timer_loop.error
+async def _eoi_loop_error(exc: BaseException) -> None:
+    log.exception("EOI timer loop error: %s", exc)
 
 
 # --------------------------------------------------------------------------- #

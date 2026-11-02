@@ -88,7 +88,7 @@ async def kos_add(
         lines.append(f"ℹ️ Already KOS: {', '.join(skipped)}.")
     if role is None:
         lines.append(
-            "⚠️ No KOS role set — set the **KOS role** in `/settings` so they "
+            "⚠️ No KOS role set — set the **KOS role** with `/settings role` so they "
             "get one automatically."
         )
     elif role_fail:

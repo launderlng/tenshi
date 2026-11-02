@@ -45,7 +45,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 ### Recruitment · Radio · Roles
 | Command | What it does | Who |
 |---|---|---|
-| `/eoi` | Open the application form; posts to the EOI channel with Yes/No votes | Everyone |
+| `/eoi` | Application form: in-game name, role + activity dropdowns, montages, experience. Posts to the EOI channel with ✅/❌ votes and a leadership ⏱️ timer dropdown — when it ends the vote is tallied, the post locks, and accepted applicants are welcomed into the gang there (+ roster role, DM) | Everyone |
 | `/eoi_post [message]` | Post an "Apply" button | Leadership |
 | `/radio new` / `view` / `panel` | Roll a new frequency / show it / post a reroll button | Leadership / Everyone |
 | `/role_menu add` / `remove` / `list` / `post` | Manage & post a self-serve role dropdown | Leadership |
@@ -63,7 +63,9 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 ### Settings
 | Command | What it does | Who |
 |---|---|---|
-| `/settings` | With no options, shows all current channel/role settings. With `setting:<name>` plus a `channel:` or `role:`, sets that one (leave the channel/role empty to clear it). Uses Discord's native pickers | Leadership |
+| `/settings view` | Setup progress bar, ✅/⬜ for every setting, and a 🩺 health check (can't post somewhere, role above Tenshi, key channel missing) | Leadership |
+| `/settings channel` / `/settings role` | Set one channel or role setting from a short emoji list (leave empty to clear) | Leadership (leadership role: admin) |
+| `/settings logs #channel` | Send every log type to one channel in one go | Leadership |
 | `/gang_help` | List all commands | Everyone |
 
 ## Code layout

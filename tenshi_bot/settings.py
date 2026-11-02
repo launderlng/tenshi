@@ -30,65 +30,193 @@ CONFIG_SETTINGS = {
 }
 
 
-def _settings_embed(guild: discord.Guild, store: dict[str, Any]) -> discord.Embed:
-    def ch(key: str) -> str:
-        cid = store.get(key)
-        c = guild.get_channel(cid) if cid else None
-        return c.mention if c else "`— not set`"
+_SETTING_EMOJI = {
+    "leadership_role": "👑", "roster_role": "🎯", "kos_role": "💀",
+    "radio_ping_role": "📻", "eoi_ping_role": "🔔",
+    "welcome_channel": "👋", "staff_channel": "🛡️", "eoi_channel": "📥",
+    "transcript_channel": "🧾",
+    "log_channel": "📝", "roster_log_channel": "📋", "kos_log_channel": "💀",
+    "radio_log_channel": "📻", "eoi_log_channel": "📨", "member_log_channel": "🎭",
+    "join_log_channel": "🚪", "ticket_log_channel": "🎫", "order_log_channel": "💰",
+}
+_LOG_KEYS = [k for k in CONFIG_SETTINGS if k.endswith("log_channel")]
+_CHANNEL_KEYS = [k for k, v in CONFIG_SETTINGS.items() if v[2] == "channel"]
+_ROLE_KEYS = [k for k, v in CONFIG_SETTINGS.items() if v[2] == "role"]
+_MAIN_CHANNEL_KEYS = [k for k in _CHANNEL_KEYS if k not in _LOG_KEYS]
 
-    def ro(key: str) -> str:
-        rid = store.get(key)
-        r = guild.get_role(rid) if rid else None
-        return r.mention if r else "`— not set`"
 
-    embed = discord.Embed(
-        title="⚙️  Tenshi — Settings",
-        description="Change any of these with `/settings setting:… channel:…` (or `role:…`).",
+def _settings_health(guild: discord.Guild, store: dict[str, Any]) -> list[str]:
+    """Things that will actually break features, in plain words."""
+    issues: list[str] = []
+    me = guild.me
+    for key in _CHANNEL_KEYS:
+        label, skey, _ = CONFIG_SETTINGS[key]
+        cid = store.get(skey)
+        if not cid:
+            continue
+        ch = guild.get_channel(cid)
+        if ch is None:
+            issues.append(f"{_SETTING_EMOJI[key]} **{label}** points at a deleted channel")
+            continue
+        if me is not None:
+            perms = ch.permissions_for(me)
+            if not (perms.view_channel and perms.send_messages and perms.embed_links):
+                issues.append(f"{_SETTING_EMOJI[key]} I can't post in {ch.mention} (**{label}**)")
+    for key in ("roster_role", "kos_role"):
+        label, skey, _ = CONFIG_SETTINGS[key]
+        role = guild.get_role(store.get(skey) or 0)
+        if role is not None and me is not None and me.top_role <= role:
+            issues.append(f"{_SETTING_EMOJI[key]} Drag **Tenshi** above {role.mention} so I can hand it out")
+    for key in ("eoi_channel", "staff_channel", "transcript_channel"):
+        if not store.get(CONFIG_SETTINGS[key][1]):
+            issues.append(f"{_SETTING_EMOJI[key]} **{CONFIG_SETTINGS[key][0]}** isn't set yet")
+    return issues
+
+
+def _settings_cards(guild: discord.Guild, store: dict[str, Any], avatar: str | None) -> list[discord.Embed]:
+    def line(key: str) -> str:
+        label, skey, kind = CONFIG_SETTINGS[key]
+        val = store.get(skey)
+        obj = (guild.get_channel(val) if kind == "channel" else guild.get_role(val)) if val else None
+        mark = "✅" if obj else "⬜"
+        return f"{mark} {_SETTING_EMOJI[key]} {label} — {obj.mention if obj else '*not set*'}"
+
+    done = sum(
+        1 for k, (_, skey, kind) in CONFIG_SETTINGS.items()
+        if store.get(skey) and (guild.get_channel(store[skey]) if kind == "channel" else guild.get_role(store[skey]))
+    )
+    total = len(CONFIG_SETTINGS)
+    head = discord.Embed(
+        title="⚙️  Tenshi — Setup",
+        description=f"**Setup progress**\n`{_bar(done, total, 18)}` **{done}/{total}** configured",
         color=EMBED_COLOR,
     )
-    embed.add_field(
-        name="👑 Roles",
-        value=(
-            f"Leadership: {ro('leadership_role_id')}\n"
-            f"Roster default: {ro('roster_role_id')}\n"
-            f"KOS: {ro('kos_role_id')}\n"
-            f"Radio ping: {ro('radio_ping_role_id')}\n"
-            f"EOI ping: {ro('eoi_ping_role_id')}"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📝 Log channels",
-        value=(
-            f"General: {ch('log_channel_id')}\n"
-            f"📋 Roster: {ch('roster_log_channel_id')}\n"
-            f"💀 KOS: {ch('kos_log_channel_id')}\n"
-            f"📻 Radio: {ch('radio_log_channel_id')}\n"
-            f"📨 Recruitment: {ch('eoi_log_channel_id')}\n"
-            f"🎭 Roles: {ch('member_log_channel_id')}\n"
-            f"🚪 Joins/Leaves: {ch('join_log_channel_id')}\n"
-            f"🎫 Tickets: {ch('ticket_log_channel_id')}\n"
-            f"💰 Orders: {ch('order_log_channel_id')}"
-        ),
-        inline=False,
-    )
-    embed.add_field(
-        name="📁 Channels",
-        value=(
-            f"👋 Welcome: {ch('welcome_channel_id')}\n"
-            f"🛡️ Staff: {ch('staff_channel_id')}\n"
-            f"📨 EOI: {ch('eoi_channel_id')}\n"
-            f"🧾 Transcripts: {ch('transcript_channel_id')}"
-        ),
-        inline=False,
+    if avatar:
+        head.set_thumbnail(url=avatar)
+    roles = discord.Embed(title="👑  Roles", description="\n".join(line(k) for k in _ROLE_KEYS), color=0xA855F7)
+    chans = discord.Embed(title="📁  Channels", description="\n".join(line(k) for k in _MAIN_CHANNEL_KEYS), color=0x0EA5E9)
+    logs = discord.Embed(title="📝  Logs", description="\n".join(line(k) for k in _LOG_KEYS), color=0x6B7280)
+    issues = _settings_health(guild, store)
+    health = discord.Embed(
+        title="🩺  Health check",
+        description="\n".join(f"⚠️ {i}" for i in issues[:12]) if issues else "✅ Everything looks good.",
+        color=0xF59E0B if issues else 0x22C55E,
     )
     _brand(
-        embed,
-        guild,
-        f"🎫 {len(store.get('ticket_types', []))} ticket types · "
-        f"🎖️ {len(store.get('ranks', []))} ranks",
+        health, guild,
+        "/settings channel · /settings role · /settings logs",
     )
-    return embed
+    return [head, roles, chans, logs, health]
+
+
+settings_group = app_commands.Group(
+    name="settings", description="Set up the bot — channels, roles & logs (leadership)"
+)
+
+
+async def _settings_guard(interaction: discord.Interaction) -> bool:
+    if is_leadership(interaction.user):
+        return True
+    await interaction.response.send_message("Only leadership can change settings.", ephemeral=True)
+    return False
+
+
+async def _apply_setting(
+    interaction: discord.Interaction, key: str, obj: "discord.abc.Snowflake | None"
+) -> None:
+    label, skey, kind = CONFIG_SETTINGS[key]
+    store = guild_store(DATA, interaction.guild_id)
+    store[skey] = obj.id if obj is not None else None
+    save_data(DATA)
+    shown = obj.mention if obj is not None else "*cleared*"
+    done = sum(1 for _, s, _ in CONFIG_SETTINGS.values() if store.get(s))
+    e = discord.Embed(
+        title=f"✅  {_SETTING_EMOJI[key]} {label}",
+        description=(
+            f"Now set to {shown}\n\n`{_bar(done, len(CONFIG_SETTINGS), 18)}` "
+            f"**{done}/{len(CONFIG_SETTINGS)}** configured"
+        ),
+        color=0x22C55E if obj is not None else 0x6B7280,
+    )
+    _brand(e, interaction.guild, "See everything with /settings view")
+    await _send_card(interaction, [e], ephemeral=True)
+    await send_log(
+        interaction.guild, store, f"⚙️ Setting changed: **{label}** → {shown}",
+        category="config", actor=interaction.user,
+    )
+
+
+@settings_group.command(name="view", description="Setup progress, every setting, and a health check")
+async def settings_view(interaction: discord.Interaction) -> None:
+    if not await _settings_guard(interaction):
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    avatar = interaction.client.user.display_avatar.url if interaction.client.user else None
+    await _send_card(interaction, _settings_cards(interaction.guild, store, avatar), ephemeral=True)
+
+
+@settings_group.command(name="channel", description="Set (or clear) a channel setting")
+@app_commands.describe(setting="Which channel setting", channel="The channel — leave empty to clear it")
+@app_commands.choices(
+    setting=[
+        app_commands.Choice(name=f"{_SETTING_EMOJI[k]} {CONFIG_SETTINGS[k][0]}", value=k)
+        for k in _CHANNEL_KEYS
+    ]
+)
+async def settings_channel(
+    interaction: discord.Interaction,
+    setting: app_commands.Choice[str],
+    channel: discord.TextChannel | None = None,
+) -> None:
+    if not await _settings_guard(interaction):
+        return
+    await _apply_setting(interaction, setting.value, channel)
+
+
+@settings_group.command(name="role", description="Set (or clear) a role setting")
+@app_commands.describe(setting="Which role setting", role="The role — leave empty to clear it")
+@app_commands.choices(
+    setting=[
+        app_commands.Choice(name=f"{_SETTING_EMOJI[k]} {CONFIG_SETTINGS[k][0]}", value=k)
+        for k in _ROLE_KEYS
+    ]
+)
+async def settings_role(
+    interaction: discord.Interaction,
+    setting: app_commands.Choice[str],
+    role: discord.Role | None = None,
+) -> None:
+    if not await _settings_guard(interaction):
+        return
+    if setting.value == "leadership_role" and not interaction.user.guild_permissions.administrator:
+        await interaction.response.send_message(
+            "Only a server admin can set the leadership role.", ephemeral=True
+        )
+        return
+    await _apply_setting(interaction, setting.value, role)
+
+
+@settings_group.command(name="logs", description="Send every log type to one channel in one go")
+@app_commands.describe(channel="Where all logs should go")
+async def settings_logs(interaction: discord.Interaction, channel: discord.TextChannel) -> None:
+    if not await _settings_guard(interaction):
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    for k in _LOG_KEYS:
+        store[CONFIG_SETTINGS[k][1]] = channel.id
+    save_data(DATA)
+    e = discord.Embed(
+        title="✅  📝 All logs → one channel",
+        description=f"All **{len(_LOG_KEYS)}** log types now go to {channel.mention}.\n"
+        "-# Split any back out with `/settings channel`.",
+        color=0x22C55E,
+    )
+    _brand(e, interaction.guild)
+    await _send_card(interaction, [e], ephemeral=True)
+    await send_log(
+        interaction.guild, store, f"⚙️ All log types routed to {channel.mention}.",
+        category="config", actor=interaction.user,
+    )
 
 
 # export everything (incl. _helpers) to the modules that build on this one

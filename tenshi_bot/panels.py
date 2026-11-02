@@ -163,6 +163,32 @@ def _radio_embed(freq: str, rolled_by: str | None = None) -> discord.Embed:
     return embed
 
 
+async def _announce_radio(
+    guild: discord.Guild,
+    store: dict[str, Any],
+    channel: "discord.abc.Messageable",
+    content: str | None = None,
+    embed: discord.Embed | None = None,
+) -> None:
+    """Post a new-frequency announcement and delete the previous one, so the
+    channel only ever shows the current radio."""
+    last = store.get("radio_last_msg") or {}
+    if last.get("channel_id") and last.get("message_id"):
+        old_ch = guild.get_channel(last["channel_id"])
+        if old_ch is not None:
+            try:
+                await old_ch.get_partial_message(last["message_id"]).delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+    msg = await channel.send(
+        content=content,
+        embed=embed,
+        allowed_mentions=discord.AllowedMentions(roles=True),
+    )
+    store["radio_last_msg"] = {"channel_id": msg.channel.id, "message_id": msg.id}
+    save_data(DATA)
+
+
 def _radio_panel_embed(freq: str | None, rolled_by: str | None = None) -> discord.Embed:
     embed = discord.Embed(title="📻  Gang Radio", color=EMBED_COLOR)
     if freq:
@@ -220,10 +246,13 @@ class RadioPanelView(discord.ui.View):
         rid = store.get("radio_ping_role_id")
         role = interaction.guild.get_role(rid) if rid else None
         if role is not None:
-            await interaction.channel.send(
-                f"{role.mention} 📻 New radio frequency: `{freq}`",
-                allowed_mentions=discord.AllowedMentions(roles=True),
-            )
+            try:
+                await _announce_radio(
+                    interaction.guild, store, interaction.channel,
+                    content=f"{role.mention} 📻 New radio frequency: `{freq}`",
+                )
+            except discord.HTTPException:
+                pass
 
         await interaction.followup.send(f"Rolled `{freq}`. 📻", ephemeral=True)
         await send_log(
@@ -253,11 +282,15 @@ async def radio_new(interaction: discord.Interaction) -> None:
     freq = _roll_frequency()
     store["radio_freq"] = freq
     save_data(DATA)
-    await interaction.channel.send(
-        embed=_radio_embed(freq, rolled_by=str(interaction.user))
-    )
     await interaction.response.send_message(
         f"New radio rolled: `{freq}` 📻", ephemeral=True
+    )
+    rid = store.get("radio_ping_role_id")
+    role = interaction.guild.get_role(rid) if rid else None
+    await _announce_radio(
+        interaction.guild, store, interaction.channel,
+        content=role.mention if role else None,
+        embed=_brand(_radio_embed(freq, rolled_by=str(interaction.user)), interaction.guild),
     )
     await send_log(
         interaction.guild,
@@ -329,7 +362,7 @@ async def eoi_post(
     store = guild_store(DATA, interaction.guild_id)
     if store.get("eoi_channel_id") is None:
         await interaction.response.send_message(
-            "Set an EOI channel first with `/eoi_channel set`.", ephemeral=True
+            "Set an EOI channel first: `/settings channel` → 📥 EOI channel.", ephemeral=True
         )
         return
 
@@ -340,7 +373,19 @@ async def eoi_post(
         "leadership reviews and votes on every application.",
         color=EMBED_COLOR,
     )
-    _brand(embed, interaction.guild)
+    logo = interaction.client.user.display_avatar.url if interaction.client.user else None
+    if logo:
+        embed.set_thumbnail(url=logo)
+    embed.add_field(
+        name="How it works",
+        value=(
+            "1️⃣  Tap **📨 Apply** — name, role, activity, montages, experience\n"
+            "2️⃣  Leadership votes ✅ / ❌ on your application\n"
+            "3️⃣  When voting closes, the result is posted here 🎉"
+        ),
+        inline=False,
+    )
+    _brand(embed, interaction.guild, "Applications are reviewed by leadership")
     await _send_card(interaction.channel, [embed], EOIPromptView)
     await interaction.response.send_message("EOI prompt posted. ✅", ephemeral=True)
 
@@ -397,13 +442,13 @@ _HELP_PAGES: dict[str, tuple[str, str, str]] = {
                 "`/close [reason]` — transcript to staff + a short DM to the customer\n"
                 "In a ticket: 🙋 Claim · 💰 Paid · 🚩 Priority · 🔒 Close"),
     "community": ("📨", "Recruitment · Radio · Roles",
-                  "`/eoi` — apply · `/eoi_post` — post Apply button (votes saved)\n"
+                  "`/eoi` — apply · `/eoi_post` — post Apply panel · ⏱️ vote timer on each EOI\n"
                   "`/radio new` · `view` · `panel`\n"
                   "`/role_menu add` · `remove` · `list` · `post`"),
     "settings": ("⚙️", "Settings",
-                 "`/settings` — see everything\n"
-                 "`/settings setting:<name> channel:<#chan>` (or `role:<@role>`)\n"
-                 "Leave the channel/role empty to clear it"),
+                 "`/settings view` — setup progress, everything set, 🩺 health check\n"
+                 "`/settings channel` · `/settings role` — set one (leave empty to clear)\n"
+                 "`/settings logs #channel` — send every log type to one channel"),
 }
 
 

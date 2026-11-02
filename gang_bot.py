@@ -33,6 +33,7 @@ bot.tree.add_command(strike_group)
 bot.tree.add_command(bank_group)
 bot.tree.add_command(war_group)
 bot.tree.add_command(gang_group)
+bot.tree.add_command(settings_group)
 
 
 @bot.listen("on_interaction")
@@ -63,6 +64,8 @@ async def on_ready() -> None:
     bot.add_view(HelpView())
     if not ticket_autoclose_loop.is_running():
         ticket_autoclose_loop.start()
+    if not eoi_timer_loop.is_running():
+        eoi_timer_loop.start()
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))

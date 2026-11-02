@@ -384,7 +384,7 @@ async def roster_add(
     elif role is None:
         lines.append(
             "⚠️ No role to give — set a rank with `/roster rank_set`, or set the "
-            "**Roster default role** in `/settings`."
+            "**Roster default role** with `/settings role`."
         )
     elif role_fail:
         lines.append(

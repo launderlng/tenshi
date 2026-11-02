@@ -534,45 +534,108 @@ async def gang_dashboard(interaction: discord.Interaction) -> None:
     await _send_card(interaction, _dashboard_cards(interaction.guild, store), DashboardView)
 
 
-@gang_group.command(name="profile", description="Everything about one member")
-@app_commands.describe(member="Who to look up (defaults to you)")
-async def gang_profile(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
-    member = member or interaction.user
-    store = guild_store(DATA, interaction.guild_id)
+def _profile_parts(member: discord.Member, store: dict[str, Any]) -> dict[str, Any]:
     rank_names = [
         r["name"] for r in store.get("ranks", [])
         if any(role.id == r["role_id"] for role in member.roles)
     ]
     strikes = [s for s in store["strikes"] if s["user_id"] == member.id]
     limit = store.get("strike_limit", 3)
-    tickets = [o for o in store["orders"] if o.get("user_id") == member.id]
-    handled = [o for o in store["orders"] if o.get("claimed_by") == member.id and o.get("status") == "closed"]
-    on_kos = any(k.get("id") == member.id for k in store["kos"])
+    n = len(strikes)
+    return {
+        "rank": rank_names[0] if rank_names else "Unranked",
+        "extra_ranks": rank_names[1:],
+        "strikes": n,
+        "limit": limit,
+        "strike_squares": "🟥" * min(n, limit) + "🟩" * max(0, limit - n),
+        "on_kos": any(k.get("id") == member.id for k in store["kos"]),
+        "opened": sum(1 for o in store["orders"] if o.get("user_id") == member.id),
+        "handled": sum(
+            1 for o in store["orders"]
+            if o.get("claimed_by") == member.id and o.get("status") == "closed"
+        ),
+        "roles": [r for r in sorted(member.roles, key=lambda r: -r.position) if not r.is_default()][:6],
+        "colour": member.colour if member.colour.value else discord.Colour(EMBED_COLOR),
+    }
 
-    embed = discord.Embed(
-        title=member.display_name,
-        color=member.color if member.color.value else EMBED_COLOR,
-        timestamp=datetime.datetime.now(datetime.timezone.utc),
-    )
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="🎖️ Rank", value=", ".join(rank_names) or "—", inline=True)
-    embed.add_field(name="💀 KOS", value="Yes" if on_kos else "No", inline=True)
-    embed.add_field(
-        name="⚠️ Strikes",
-        value=f"**{len(strikes)}/{limit}** " + "🟥" * min(len(strikes), limit) + "⬛" * max(0, limit - len(strikes)),
-        inline=True,
-    )
-    if member.joined_at:
-        embed.add_field(name="📅 Joined", value=f"<t:{int(member.joined_at.timestamp())}:R>", inline=True)
-    embed.add_field(name="🎫 Tickets opened", value=str(len(tickets)), inline=True)
-    if handled:
-        embed.add_field(
-            name="🙋 Tickets handled",
-            value=str(len(handled)),
-            inline=True,
+
+def _profile_layout(member: discord.Member, p: dict[str, Any], banner: str | None, guild: discord.Guild):
+    """Profile card: banner → avatar + name header → stats → roles."""
+    c = discord.ui.Container(accent_colour=p["colour"])
+    if banner:
+        c.add_item(discord.ui.MediaGallery(discord.MediaGalleryItem(banner)))
+    joined = f"joined <t:{int(member.joined_at.timestamp())}:R>" if member.joined_at else ""
+    c.add_item(
+        discord.ui.Section(
+            discord.ui.TextDisplay(
+                f"# {member.display_name}\n-# @{member.name} · {joined}"
+            ),
+            discord.ui.TextDisplay(f"### 🎖️ {p['rank']}"
+                                   + (f"  ·  {' · '.join(p['extra_ranks'])}" if p["extra_ranks"] else "")),
+            accessory=discord.ui.Thumbnail(member.display_avatar.url),
         )
-    _brand(embed, interaction.guild)
-    await _send_v2(interaction, embed)
+    )
+    c.add_item(discord.ui.Separator())
+    status = "💀 **On KOS**" if p["on_kos"] else "🟢 **Not on KOS**"
+    c.add_item(discord.ui.TextDisplay(
+        f"**⚠️ Strikes**  {p['strikes']}/{p['limit']}\n{p['strike_squares']}\n\n"
+        f"{status}\n"
+        f"🎫 **{p['opened']}** tickets opened  ·  🙋 **{p['handled']}** handled"
+    ))
+    if p["roles"]:
+        c.add_item(discord.ui.Separator(visible=False))
+        c.add_item(discord.ui.TextDisplay("🏷️ " + " ".join(r.mention for r in p["roles"])))
+    c.add_item(discord.ui.Separator(visible=False))
+    c.add_item(discord.ui.TextDisplay(
+        f"-# {guild.name} · account made <t:{int(member.created_at.timestamp())}:R>"
+    ))
+    lv = discord.ui.LayoutView()
+    lv.add_item(c)
+    return lv
+
+
+def _profile_embed(member: discord.Member, p: dict[str, Any], banner: str | None, guild) -> discord.Embed:
+    e = discord.Embed(
+        title=member.display_name,
+        description=f"@{member.name} · 🎖️ **{p['rank']}**",
+        color=p["colour"],
+    )
+    e.set_thumbnail(url=member.display_avatar.url)
+    if banner:
+        e.set_image(url=banner)
+    e.add_field(name="⚠️ Strikes", value=f"{p['strikes']}/{p['limit']} {p['strike_squares']}")
+    e.add_field(name="💀 KOS", value="Yes" if p["on_kos"] else "No")
+    e.add_field(name="🎫 Tickets", value=f"{p['opened']} opened · {p['handled']} handled")
+    if p["roles"]:
+        e.add_field(name="🏷️ Roles", value=" ".join(r.mention for r in p["roles"]), inline=False)
+    _brand(e, guild)
+    return e
+
+
+@gang_group.command(name="profile", description="A member's gang profile card")
+@app_commands.describe(member="Who to look up (defaults to you)")
+async def gang_profile(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
+    member = member or interaction.user
+    await interaction.response.defer()
+    store = guild_store(DATA, interaction.guild_id)
+    p = _profile_parts(member, store)
+    banner = None
+    try:  # profile banners only come back from a full user fetch
+        u = await interaction.client.fetch_user(member.id)
+        banner = u.banner.url if u.banner else None
+    except discord.HTTPException:
+        pass
+    try:
+        await interaction.followup.send(
+            view=_profile_layout(member, p, banner, interaction.guild),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("V2 profile failed (%s) — falling back to embed", exc)
+        await interaction.followup.send(
+            embed=_profile_embed(member, p, banner, interaction.guild),
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
 
 # export everything (incl. _helpers) to the modules that build on this one
