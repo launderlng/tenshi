@@ -141,6 +141,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("roster", [])
     g.setdefault("kos", [])
     g.setdefault("eoi_channel_id", None)
+    g.setdefault("eoi_ping_role_id", None)
     g.setdefault("roster_role_id", None)
     g.setdefault("kos_role_id", None)
     g.setdefault("self_roles", [])
@@ -525,7 +526,16 @@ class EOIModal(discord.ui.Modal, title="Gang Expression of Interest"):
             embed.set_image(url=thumb)
         embed.set_footer(text="✅ 0   •   ❌ 0")
 
-        await channel.send(embed=embed, view=EOIView())
+        ping_id = store.get("eoi_ping_role_id")
+        ping_role = interaction.guild.get_role(ping_id) if ping_id else None
+        await channel.send(
+            content=f"{ping_role.mention} 📨 New EOI from {interaction.user.mention}"
+            if ping_role
+            else None,
+            embed=embed,
+            view=EOIView(),
+            allowed_mentions=discord.AllowedMentions(roles=True, users=False),
+        )
         await interaction.followup.send(
             f"Your EOI has been sent to {channel.mention}. Good luck. 🫡",
             ephemeral=True,
@@ -1908,6 +1918,7 @@ CONFIG_SETTINGS = {
     "roster_role": ("Roster default role", "roster_role_id", "role"),
     "kos_role": ("KOS role", "kos_role_id", "role"),
     "radio_ping_role": ("Radio ping role", "radio_ping_role_id", "role"),
+    "eoi_ping_role": ("EOI ping role", "eoi_ping_role_id", "role"),
 }
 
 
@@ -1933,7 +1944,8 @@ def _settings_embed(guild: discord.Guild, store: dict[str, Any]) -> discord.Embe
             f"Leadership: {ro('leadership_role_id')}\n"
             f"Roster default: {ro('roster_role_id')}\n"
             f"KOS: {ro('kos_role_id')}\n"
-            f"Radio ping: {ro('radio_ping_role_id')}"
+            f"Radio ping: {ro('radio_ping_role_id')}\n"
+            f"EOI ping: {ro('eoi_ping_role_id')}"
         ),
         inline=False,
     )
