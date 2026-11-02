@@ -36,6 +36,10 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `/ticket board` | Active orders grouped by type, paid/unpaid | Staff |
 | `/close [reason]` | Close the ticket you're in — the reason and how long it was open go in the transcript, the customer's DM and the log | Staff or ticket owner |
 | `/ticket add @member` / `/ticket remove @member` | Let someone into the ticket you're in, or take them out | Staff |
+| `/ticket stats` | Open/closed/paid counts, average rating, average time open, and a staff leaderboard | Staff |
+| `/ticket autoclose <hours>` | Warn then auto-close tickets with no messages for that long (0 = off) | Leadership |
+| (in ticket) 🚩 Priority | Cycle Low → Normal → High → Urgent; the board sorts urgent first | Staff |
+| (after close) ⭐ rating | Customer gets a DM with an HTML transcript and 1–5 star buttons; ratings feed `/ticket stats` | Customer |
 | (in ticket) 💰 Mark Paid · 🔒 Close | Mark paid, or close → transcript then delete | Staff |
 
 ### Recruitment · Radio · Roles

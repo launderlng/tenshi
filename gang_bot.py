@@ -38,7 +38,7 @@ from typing import Any
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 # --------------------------------------------------------------------------- #
 # Configuration
@@ -166,6 +166,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("next_order_id", 1)
     g.setdefault("tickets_open", True)
     g.setdefault("ticket_category_id", None)
+    g.setdefault("ticket_autoclose_hours", 0)
     return g
 
 
@@ -2396,6 +2397,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
             "`/ticket toggle` — open/close new orders\n"
             "`/close [reason]` — close the ticket you're in\n"
             "`/ticket add` · `/ticket remove` — who's in a ticket\n"
+            "`/ticket stats` — leaderboard · `/ticket autoclose <hours>`\n"
             "In a ticket: 💰 Mark Paid · 🔒 Close (saves transcript)"
         ),
         inline=False,
@@ -2459,6 +2461,20 @@ def _find_ticket_type(store: dict[str, Any], name: str) -> dict | None:
     return None
 
 
+PRIORITIES = [
+    ("low", "🟢 Low"),
+    ("normal", "🔵 Normal"),
+    ("high", "🟠 High"),
+    ("urgent", "🔴 Urgent"),
+]
+_PRIO_RANK = {k: i for i, (k, _) in enumerate(PRIORITIES)}
+
+
+def _prio_label(order: dict[str, Any] | None) -> str:
+    key = (order or {}).get("priority", "normal")
+    return dict(PRIORITIES).get(key, "🔵 Normal")
+
+
 def _order_embed(order: dict[str, Any]) -> discord.Embed:
     paid = order.get("paid", False)
     closed = order.get("status", "open") == "closed"
@@ -2471,6 +2487,7 @@ def _order_embed(order: dict[str, Any]) -> discord.Embed:
     lines = [
         f"**Customer**  <@{order['user_id']}>",
         f"**Status**  {status}",
+        f"**Priority**  {_prio_label(order)}",
         f"**Handled by**  {f'<@{claimed}>' if claimed else '*unclaimed*'}",
     ]
     if created:
@@ -2498,8 +2515,9 @@ def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
     def fmt(o: dict[str, Any]) -> str:
         items = (o.get("guns") or "—").replace("\n", " ")
         qty = (o.get("quantity") or "—").replace("\n", " ")
-        mark = "🟢" if o.get("paid") else "🔴"
-        line = f"{mark} `#{o['id']}` <@{o['user_id']}> — {items} ×{qty}"
+        mark = "💰" if o.get("paid") else "⏳"
+        prio = _prio_label(o).split(" ")[0]
+        line = f"{prio}{mark} `#{o['id']}` <@{o['user_id']}> — {items} ×{qty}"
         return line[:200]
 
     embed = discord.Embed(
@@ -2518,6 +2536,7 @@ def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
     )
 
     types: dict[str, list[dict[str, Any]]] = {}
+    active.sort(key=lambda o: -_PRIO_RANK.get(o.get("priority", "normal"), 1))
     for o in active:
         types.setdefault(o.get("type") or "Order", []).append(o)
     for ttype, orders in types.items():
@@ -2531,7 +2550,7 @@ def _orders_board_embed(store: dict[str, Any]) -> discord.Embed:
             value=val,
             inline=False,
         )
-    embed.set_footer(text="💰 Mark Paid · 🔒 Close — in each ticket")
+    embed.set_footer(text="🔴🟠🔵🟢 priority · 💰 paid · ⏳ unpaid — urgent first")
     return embed
 
 
@@ -2551,51 +2570,192 @@ def _open_for(order: dict | None) -> str | None:
     return " ".join(parts)
 
 
-async def _close_ticket(
-    interaction: discord.Interaction,
+# ---- transcripts ------------------------------------------------------------ #
+
+async def _collect_history(channel: discord.TextChannel) -> list[dict[str, Any]]:
+    """Read the whole channel once; both transcript formats render from this."""
+    rows: list[dict[str, Any]] = []
+    try:
+        async for m in channel.history(limit=None, oldest_first=True):
+            embeds = []
+            for e in m.embeds:
+                parts = []
+                if e.title:
+                    parts.append(e.title)
+                if e.description:
+                    parts.append(e.description)
+                for f in e.fields:
+                    parts.append(f"{f.name}: {f.value}")
+                if parts:
+                    embeds.append(parts)
+            rows.append(
+                {
+                    "ts": m.created_at,
+                    "author": str(m.author),
+                    "name": m.author.display_name,
+                    "avatar": m.author.display_avatar.url,
+                    "bot": m.author.bot,
+                    "content": m.content or "",
+                    "embeds": embeds,
+                    "files": [(a.filename, a.url) for a in m.attachments],
+                }
+            )
+    except discord.HTTPException:
+        pass
+    return rows
+
+
+def _render_text(rows: list[dict[str, Any]]) -> str:
+    out = []
+    for r in rows:
+        line = r["content"]
+        for parts in r["embeds"]:
+            line += (" " if line else "") + "[embed] " + " | ".join(parts)
+        for fn, url in r["files"]:
+            line += f" [attachment: {fn} {url}]"
+        out.append(f"[{r['ts'].strftime('%Y-%m-%d %H:%M UTC')}] {r['author']}: {line}")
+    return "\n".join(out) if out else "(no messages)"
+
+
+def _render_html(rows: list[dict[str, Any]], title: str, guild_name: str) -> str:
+    import html as _h
+
+    def esc(s: str) -> str:
+        return _h.escape(s).replace("\n", "<br>")
+
+    msgs = []
+    for r in rows:
+        body = f'<div class="txt">{esc(r["content"])}</div>' if r["content"] else ""
+        for parts in r["embeds"]:
+            inner = "".join(f"<div>{esc(p)}</div>" for p in parts)
+            body += f'<div class="emb">{inner}</div>'
+        for fn, url in r["files"]:
+            body += f'<div class="file">📎 <a href="{_h.escape(url)}">{esc(fn)}</a></div>'
+        tag = '<span class="bot">BOT</span>' if r["bot"] else ""
+        msgs.append(
+            f'<div class="msg"><img class="av" src="{_h.escape(r["avatar"])}">'
+            f'<div><div class="head"><b>{esc(r["name"])}</b>{tag}'
+            f'<span class="ts">{r["ts"].strftime("%d %b %Y %H:%M UTC")}</span></div>'
+            f"{body}</div></div>"
+        )
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{_h.escape(title)}</title><style>"
+        "body{margin:0;background:#313338;color:#dbdee1;font:15px/1.4 system-ui,sans-serif}"
+        ".top{background:#1e1f22;padding:18px 24px;border-bottom:3px solid #e11d48}"
+        ".top h1{margin:0;font-size:20px;color:#fff}.top p{margin:4px 0 0;color:#949ba4}"
+        ".msg{display:flex;gap:14px;padding:8px 24px}.msg:hover{background:#2e3035}"
+        ".av{width:40px;height:40px;border-radius:50%}.head b{color:#fff}"
+        ".bot{background:#5865f2;color:#fff;font-size:10px;padding:1px 4px;border-radius:3px;margin-left:6px}"
+        ".ts{color:#949ba4;font-size:12px;margin-left:8px}"
+        ".emb{border-left:4px solid #e11d48;background:#2b2d31;padding:8px 12px;margin-top:4px;border-radius:4px;max-width:560px}"
+        ".file a{color:#00a8fc}"
+        "</style></head><body>"
+        f"<div class='top'><h1>{_h.escape(title)}</h1><p>{_h.escape(guild_name)} · "
+        f"{len(rows)} messages</p></div>{''.join(msgs)}</body></html>"
+    )
+
+
+async def _build_transcript(channel: discord.TextChannel) -> str:
+    return _render_text(await _collect_history(channel))
+
+
+# ---- post-close rating ------------------------------------------------------ #
+
+class RatingView(discord.ui.View):
+    """⭐ 1–5 buttons in the customer's DM after a ticket closes."""
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+        for n in range(1, 6):
+            b = discord.ui.Button(
+                label="⭐" * n if n <= 3 else f"{n} ⭐",
+                style=discord.ButtonStyle.success if n >= 4 else discord.ButtonStyle.secondary,
+                custom_id=f"rate:{n}",
+            )
+            b.callback = self._make_cb(n)
+            self.add_item(b)
+
+    def _make_cb(self, n: int):
+        async def cb(interaction: discord.Interaction) -> None:
+            pending = DATA.setdefault("rating_msgs", {})
+            link = pending.pop(str(interaction.message.id), None)
+            if not link:
+                await interaction.response.edit_message(
+                    content="Thanks — this ticket was already rated. 🙏", view=None
+                )
+                return
+            g = bot.get_guild(link["guild_id"])
+            store = guild_store(DATA, link["guild_id"])
+            order = next(
+                (o for o in store["orders"] if o.get("id") == link["order_id"]), None
+            )
+            if order is not None:
+                order["rating"] = n
+            save_data(DATA)
+            await interaction.response.edit_message(
+                content=f"Thanks for rating us **{'⭐' * n}** ({n}/5)! 🙏", view=None
+            )
+            if g is not None and order is not None:
+                await send_log(
+                    g, store,
+                    f"⭐ Ticket #{order['id']} rated **{n}/5** by <@{order['user_id']}>.",
+                    category="tickets",
+                    fields=[
+                        ("Handled by", f"<@{order['claimed_by']}>" if order.get("claimed_by") else "—", True),
+                        ("Type", order.get("type") or "—", True),
+                    ],
+                )
+        return cb
+
+
+# ---- closing ----------------------------------------------------------------- #
+
+async def _close_ticket_core(
+    guild: discord.Guild,
+    channel: discord.TextChannel,
+    closer: "discord.abc.User",
     store: dict[str, Any],
     order: dict | None,
     reason: str | None = None,
 ) -> None:
-    """Save a transcript (if a channel is set), log it, then delete the channel."""
-    guild = interaction.guild
-    channel = interaction.channel
-
+    """Transcript (HTML + text) → transcript channel, DM + rating → customer,
+    log, then delete the channel. Works from a click or the auto-close loop."""
     oid = order["id"] if order else channel.name
     ttype = (order.get("type") if order else "Ticket") or "Ticket"
-    transcript = await _build_transcript(channel)
-    fname = f"ticket-{oid}.txt"
+    rows = await _collect_history(channel)
+    text = _render_text(rows)
+    html_doc = _render_html(rows, f"{ttype} #{oid}", guild.name)
     reason = (reason or "").strip() or None
     open_for = _open_for(order)
 
-    def _summary_embed() -> discord.Embed:
-        e = discord.Embed(
-            title=f"🧾  Transcript · {ttype} #{oid}",
-            color=EMBED_COLOR,
-            timestamp=datetime.datetime.now(datetime.timezone.utc),
-        )
-        if order:
-            e.add_field(name="Customer", value=f"<@{order['user_id']}>", inline=True)
-            e.add_field(
-                name="Paid",
-                value="🟢 Yes" if order.get("paid") else "🔴 No",
-                inline=True,
-            )
-            if order.get("claimed_by"):
-                e.add_field(
-                    name="Handled by", value=f"<@{order['claimed_by']}>", inline=True
-                )
-            e.add_field(name="Items", value=order.get("guns") or "—", inline=False)
-        if reason:
-            e.add_field(name="Reason", value=reason[:1024], inline=False)
-        if open_for:
-            e.add_field(name="Open for", value=open_for, inline=True)
-        e.add_field(name="Closed by", value=interaction.user.mention, inline=True)
-        _brand(e, guild)
-        return e
+    def files() -> list[discord.File]:
+        return [
+            discord.File(io.BytesIO(html_doc.encode("utf-8")), filename=f"ticket-{oid}.html"),
+            discord.File(io.BytesIO(text.encode("utf-8")), filename=f"ticket-{oid}.txt"),
+        ]
 
-    # transcript goes to: the transcript channel if set, else the ticket log,
-    # else the general log
+    summary = discord.Embed(
+        title=f"🧾  Transcript · {ttype} #{oid}",
+        description="Open the **.html** file for a Discord-style view of the whole ticket.",
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    if order:
+        summary.add_field(name="Customer", value=f"<@{order['user_id']}>", inline=True)
+        summary.add_field(name="Paid", value="🟢 Yes" if order.get("paid") else "🔴 No", inline=True)
+        summary.add_field(name="Priority", value=_prio_label(order), inline=True)
+        if order.get("claimed_by"):
+            summary.add_field(name="Handled by", value=f"<@{order['claimed_by']}>", inline=True)
+        summary.add_field(name="Items", value=order.get("guns") or "—", inline=False)
+    if reason:
+        summary.add_field(name="Reason", value=reason[:1024], inline=False)
+    if open_for:
+        summary.add_field(name="Open for", value=open_for, inline=True)
+    summary.add_field(name="Closed by", value=getattr(closer, "mention", str(closer)), inline=True)
+    summary.add_field(name="Messages", value=str(len(rows)), inline=True)
+    _brand(summary, guild)
+
     dest_id = (
         store.get("transcript_channel_id")
         or store.get("ticket_log_channel_id")
@@ -2604,15 +2764,16 @@ async def _close_ticket(
     dest = guild.get_channel(dest_id) if dest_id else None
     if dest is not None:
         try:
-            await dest.send(
-                embed=_summary_embed(),
-                file=discord.File(io.BytesIO(transcript.encode("utf-8")), filename=fname),
-            )
+            await dest.send(embed=summary, files=files())
         except discord.HTTPException:
             pass
 
-    # DM the customer a copy of their closed ticket
     if order is not None:
+        order["status"] = "closed"
+        order["closed_ts"] = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+        order["closed_by"] = getattr(closer, "id", None)
+        save_data(DATA)
+
         member = guild.get_member(order["user_id"])
         if member is None:
             try:
@@ -2622,41 +2783,37 @@ async def _close_ticket(
         if member is not None:
             dm = discord.Embed(
                 title=f"🔒  Your {ttype} ticket was closed",
-                description=f"Ticket **#{oid}** in **{guild.name}** has been closed.",
+                description=(
+                    f"Ticket **#{oid}** in **{guild.name}** has been closed.\n"
+                    "**How did we do?** Tap a rating below. ⭐"
+                ),
                 color=EMBED_COLOR,
                 timestamp=datetime.datetime.now(datetime.timezone.utc),
             )
             if order.get("guns"):
                 dm.add_field(name="Items", value=order["guns"], inline=False)
-            dm.add_field(
-                name="Paid",
-                value="🟢 Yes" if order.get("paid") else "🔴 No",
-                inline=True,
-            )
+            dm.add_field(name="Paid", value="🟢 Yes" if order.get("paid") else "🔴 No", inline=True)
             if reason:
                 dm.add_field(name="Reason", value=reason[:1024], inline=False)
             if guild.icon:
                 dm.set_thumbnail(url=guild.icon.url)
             dm.set_footer(text=f"{guild.name} · transcript attached")
             try:
-                await member.send(
-                    embed=dm,
-                    file=discord.File(
-                        io.BytesIO(transcript.encode("utf-8")), filename=fname
-                    ),
-                )
+                dm_msg = await member.send(embed=dm, files=files(), view=RatingView())
+                DATA.setdefault("rating_msgs", {})[str(dm_msg.id)] = {
+                    "guild_id": guild.id,
+                    "order_id": order["id"],
+                }
+                save_data(DATA)
             except discord.HTTPException:
-                pass  # customer has DMs closed — nothing we can do
+                pass  # customer has DMs closed
 
-    if order is not None:
-        order["status"] = "closed"
-        save_data(DATA)
         await send_log(
             guild,
             store,
             f"🔒 **{order.get('type', 'order')}** #{order['id']} closed.",
             category="tickets",
-            actor=interaction.user,
+            actor=closer if isinstance(closer, (discord.Member, discord.User)) else None,
             fields=[
                 ("Order", f"#{order['id']}", True),
                 ("Customer", f"<@{order['user_id']}>", True),
@@ -2667,44 +2824,31 @@ async def _close_ticket(
             ],
         )
 
-    closing = discord.Embed(
-        description="🔒 **Ticket closed.** Saving transcript and deleting this "
-        "channel in 5 seconds…",
-        color=EMBED_COLOR,
-    )
     try:
-        await channel.send(embed=closing)
+        await channel.send(
+            embed=discord.Embed(
+                description="🔒 **Ticket closed.** Transcript saved — deleting this channel in 5 seconds…",
+                color=EMBED_COLOR,
+            )
+        )
     except discord.HTTPException:
         pass
     await asyncio.sleep(5)
     try:
-        await channel.delete(reason=f"Ticket closed by {interaction.user}")
+        await channel.delete(reason=f"Ticket closed by {closer}")
     except discord.HTTPException:
         pass
 
 
-async def _build_transcript(channel: discord.TextChannel) -> str:
-    lines: list[str] = []
-    try:
-        async for m in channel.history(limit=None, oldest_first=True):
-            ts = m.created_at.strftime("%Y-%m-%d %H:%M UTC")
-            content = m.content or ""
-            for e in m.embeds:
-                parts = []
-                if e.title:
-                    parts.append(e.title)
-                if e.description:
-                    parts.append(e.description)
-                for f in e.fields:
-                    parts.append(f"{f.name}: {f.value}")
-                if parts:
-                    content += (" " if content else "") + "[embed] " + " | ".join(parts)
-            for a in m.attachments:
-                content += f" [attachment: {a.filename} {a.url}]"
-            lines.append(f"[{ts}] {m.author}: {content}")
-    except discord.HTTPException:
-        lines.append("(couldn't read full history)")
-    return "\n".join(lines) if lines else "(no messages)"
+async def _close_ticket(
+    interaction: discord.Interaction,
+    store: dict[str, Any],
+    order: dict | None,
+    reason: str | None = None,
+) -> None:
+    await _close_ticket_core(
+        interaction.guild, interaction.channel, interaction.user, store, order, reason
+    )
 
 
 class OrderModal(discord.ui.Modal):
@@ -2828,7 +2972,7 @@ class OrderModal(discord.ui.Modal):
         )
         welcome.add_field(
             name="Staff tools",
-            value="🙋 Claim · 💰 Mark Paid · 🔒 Close · `/ticket add` · `/close [reason]`",
+            value="🙋 Claim · 💰 Mark Paid · 🚩 Priority · 🔒 Close · `/ticket add` · `/close [reason]`",
             inline=False,
         )
         msg = await channel.send(
@@ -3010,6 +3154,40 @@ class OrderTicketView(discord.ui.View):
                 ("Customer", f"<@{order['user_id']}>", True),
                 ("Items", order.get("guns") or "—", False),
             ],
+        )
+
+    @discord.ui.button(
+        label="Priority",
+        style=discord.ButtonStyle.secondary,
+        emoji="🚩",
+        custom_id="order:priority",
+    )
+    async def priority(
+        self, interaction: discord.Interaction, button: discord.ui.Button
+    ) -> None:
+        if not is_leadership(interaction.user):
+            await interaction.response.send_message(
+                "Only staff can set priority.", ephemeral=True
+            )
+            return
+        store = guild_store(DATA, interaction.guild_id)
+        order = _find_order_by_channel(store, interaction.channel_id)
+        if order is None:
+            await interaction.response.send_message("Couldn't find this order.", ephemeral=True)
+            return
+        keys = [k for k, _ in PRIORITIES]
+        cur = order.get("priority", "normal")
+        order["priority"] = keys[(keys.index(cur) + 1) % len(keys)] if cur in keys else "high"
+        save_data(DATA)
+        embeds = interaction.message.embeds
+        new_card = _brand(_order_embed(order), interaction.guild)
+        await interaction.response.edit_message(
+            embeds=[embeds[0], new_card] if len(embeds) > 1 else [new_card], view=self
+        )
+        await send_log(
+            interaction.guild, store,
+            f"🚩 Ticket #{order['id']} priority → **{_prio_label(order)}**.",
+            category="tickets", actor=interaction.user, channel_ctx=interaction.channel,
         )
 
     @discord.ui.button(
@@ -3389,6 +3567,173 @@ async def ticket_remove(interaction: discord.Interaction, member: discord.Member
     await _ticket_member_access(interaction, member, allow=False)
 
 
+# ---- auto-close inactive tickets -------------------------------------------- #
+
+@tasks.loop(minutes=15)
+async def ticket_autoclose_loop() -> None:
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    for guild in bot.guilds:
+        store = guild_store(DATA, guild.id)
+        hours = store.get("ticket_autoclose_hours") or 0
+        if hours <= 0:
+            continue
+        idle_limit = hours * 3600
+        grace = max(3600, min(12 * 3600, idle_limit // 2))
+        for order in list(store["orders"]):
+            if order.get("status", "open") == "closed" or not order.get("channel_id"):
+                continue
+            ch = guild.get_channel(order["channel_id"])
+            if ch is None:
+                continue
+            last_id = ch.last_message_id
+            last_ts = (
+                discord.utils.snowflake_time(last_id).timestamp()
+                if last_id
+                else order.get("created_ts", now)
+            )
+            warn_id = order.get("autoclose_warn_msg")
+            if warn_id and last_id and last_id != warn_id:
+                # someone talked after the warning — reset
+                order.pop("autoclose_warn_msg", None)
+                order.pop("autoclose_warned_ts", None)
+                save_data(DATA)
+                warn_id = None
+            if not warn_id:
+                if now - last_ts >= idle_limit:
+                    try:
+                        w = await ch.send(
+                            content=f"<@{order['user_id']}>",
+                            embed=discord.Embed(
+                                description=(
+                                    f"⏰ This ticket has been quiet for **{hours}h**. It will "
+                                    f"**auto-close in {grace // 3600}h** unless someone replies."
+                                ),
+                                color=0xF59E0B,
+                            ),
+                        )
+                        order["autoclose_warn_msg"] = w.id
+                        order["autoclose_warned_ts"] = int(now)
+                        save_data(DATA)
+                    except discord.HTTPException:
+                        pass
+            elif now - order.get("autoclose_warned_ts", now) >= grace:
+                order["status"] = "closed"
+                save_data(DATA)
+                await _close_ticket_core(
+                    guild, ch, guild.me, store, order,
+                    f"Auto-closed after {hours}h of inactivity",
+                )
+
+
+@ticket_autoclose_loop.before_loop
+async def _before_autoclose() -> None:
+    await bot.wait_until_ready()
+
+
+@ticket_autoclose_loop.error
+async def _autoclose_error(exc: BaseException) -> None:
+    log.exception("Auto-close loop error: %s", exc)
+
+
+@ticket_group.command(
+    name="autoclose",
+    description="Auto-close tickets after N hours of no messages (0 = off) (leadership)",
+)
+@app_commands.describe(hours="Hours of silence before a warning, then auto-close (0 turns it off)")
+async def ticket_autoclose(interaction: discord.Interaction, hours: app_commands.Range[int, 0, 720]) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message(
+            "Only leadership can change auto-close.", ephemeral=True
+        )
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    store["ticket_autoclose_hours"] = hours
+    save_data(DATA)
+    if hours:
+        grace = max(1, min(12, hours // 2))
+        msg = (
+            f"⏰ Auto-close **on**: after **{hours}h** with no messages a ticket gets a "
+            f"warning, then closes **{grace}h** later if nobody replies."
+        )
+    else:
+        msg = "⏰ Auto-close **off**."
+    await interaction.response.send_message(msg, ephemeral=True)
+    await send_log(
+        interaction.guild, store, f"⏰ Ticket auto-close set to **{hours or 'off'}**{'h' if hours else ''}.",
+        category="tickets", actor=interaction.user,
+    )
+
+
+@ticket_group.command(name="stats", description="Ticket stats & staff leaderboard (staff)")
+async def ticket_stats(interaction: discord.Interaction) -> None:
+    if not is_leadership(interaction.user):
+        await interaction.response.send_message("Only staff can view stats.", ephemeral=True)
+        return
+    store = guild_store(DATA, interaction.guild_id)
+    orders = store["orders"]
+    closed = [o for o in orders if o.get("status") == "closed"]
+    open_n = sum(1 for o in orders if o.get("status", "open") != "closed")
+    rated = [o["rating"] for o in closed if o.get("rating")]
+    durations = [
+        o["closed_ts"] - o["created_ts"]
+        for o in closed
+        if o.get("closed_ts") and o.get("created_ts")
+    ]
+
+    def fmt_dur(secs: float) -> str:
+        h, rem = divmod(int(secs), 3600)
+        return f"{h}h {rem // 60}m" if h else f"{rem // 60}m"
+
+    embed = discord.Embed(
+        title="📊  Ticket Stats",
+        color=EMBED_COLOR,
+        timestamp=datetime.datetime.now(datetime.timezone.utc),
+    )
+    embed.add_field(name="Open", value=f"**{open_n}**", inline=True)
+    embed.add_field(name="Closed", value=f"**{len(closed)}**", inline=True)
+    embed.add_field(
+        name="Paid",
+        value=f"**{sum(1 for o in orders if o.get('paid'))}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="Avg rating",
+        value=f"**{sum(rated) / len(rated):.1f}** ⭐ ({len(rated)} ratings)" if rated else "—",
+        inline=True,
+    )
+    embed.add_field(
+        name="Avg time open",
+        value=fmt_dur(sum(durations) / len(durations)) if durations else "—",
+        inline=True,
+    )
+
+    board: dict[int, dict[str, Any]] = {}
+    for o in closed:
+        h = o.get("claimed_by")
+        if not h:
+            continue
+        b = board.setdefault(h, {"n": 0, "r": []})
+        b["n"] += 1
+        if o.get("rating"):
+            b["r"].append(o["rating"])
+    if board:
+        medals = ["🥇", "🥈", "🥉"]
+        ranked = sorted(board.items(), key=lambda kv: -kv[1]["n"])[:10]
+        lines = []
+        for i, (uid, b) in enumerate(ranked):
+            avg = f" · {sum(b['r']) / len(b['r']):.1f}⭐" if b["r"] else ""
+            lines.append(f"{medals[i] if i < 3 else f'`{i + 1}.`'} <@{uid}> — **{b['n']}** handled{avg}")
+        embed.add_field(name="🏆 Staff leaderboard", value="\n".join(lines), inline=False)
+    else:
+        embed.add_field(
+            name="🏆 Staff leaderboard",
+            value="*No claimed tickets closed yet — hit 🙋 Claim on tickets to get on the board.*",
+            inline=False,
+        )
+    _brand(embed, interaction.guild)
+    await interaction.response.send_message(embed=embed)
+
+
 @bot.tree.command(
     name="close", description="Close the ticket you're in (staff or ticket owner)"
 )
@@ -3529,6 +3874,9 @@ async def on_ready() -> None:
     bot.add_view(STAFF_DRAW_VIEW)
     bot.add_view(ROSTER_PROPOSAL_VIEW)
     bot.add_view(ROSTER_REFRESH_VIEW)
+    bot.add_view(RatingView())
+    if not ticket_autoclose_loop.is_running():
+        ticket_autoclose_loop.start()
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))
