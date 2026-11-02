@@ -236,6 +236,79 @@ def _brand(
     return embed
 
 
+def _embed_to_v2(embed: discord.Embed) -> "discord.ui.LayoutView":
+    """Render a classic embed as a Components V2 container: big header (with the
+    thumbnail beside it), body, inline fields packed into a grid-ish block,
+    full-width fields as sub-headings, and the footer as small print."""
+    container = discord.ui.Container(
+        accent_colour=embed.colour or discord.Colour(EMBED_COLOR)
+    )
+    head_parts = []
+    if embed.author and embed.author.name:
+        head_parts.append(f"-# {embed.author.name}")
+    if embed.title:
+        head_parts.append(f"## {embed.title}")
+    if embed.description:
+        head_parts.append(embed.description)
+    head_txt = "\n".join(head_parts) or "​"
+    thumb = embed.thumbnail.url if embed.thumbnail and embed.thumbnail.url else None
+    if thumb:
+        container.add_item(
+            discord.ui.Section(
+                discord.ui.TextDisplay(head_txt[:3900]),
+                accessory=discord.ui.Thumbnail(thumb),
+            )
+        )
+    else:
+        container.add_item(discord.ui.TextDisplay(head_txt[:3900]))
+
+    if embed.fields:
+        container.add_item(discord.ui.Separator())
+        inline_buf: list[str] = []
+
+        def flush() -> None:
+            if inline_buf:
+                container.add_item(discord.ui.TextDisplay("\n".join(inline_buf)[:3900]))
+                inline_buf.clear()
+
+        for f in embed.fields:
+            if f.inline:
+                inline_buf.append(f"**{f.name}** · {f.value}")
+            else:
+                flush()
+                container.add_item(discord.ui.TextDisplay(f"### {f.name}\n{f.value}"[:3900]))
+        flush()
+
+    if embed.image and embed.image.url:
+        container.add_item(
+            discord.ui.MediaGallery(discord.MediaGalleryItem(embed.image.url))
+        )
+    if embed.footer and embed.footer.text:
+        container.add_item(discord.ui.Separator(visible=False))
+        container.add_item(discord.ui.TextDisplay(f"-# {embed.footer.text}"))
+
+    layout = discord.ui.LayoutView()
+    layout.add_item(container)
+    return layout
+
+
+async def _send_v2(
+    interaction: discord.Interaction, embed: discord.Embed, *, ephemeral: bool = False
+) -> None:
+    """Send an embed in the new V2 look; if anything about V2 fails, fall back
+    to the classic embed so the command always answers."""
+    try:
+        layout = _embed_to_v2(embed)
+        await interaction.response.send_message(view=layout, ephemeral=ephemeral)
+        return
+    except Exception as exc:  # noqa: BLE001
+        log.warning("V2 render failed (%s) — falling back to embed", exc)
+    if interaction.response.is_done():
+        await interaction.followup.send(embed=embed, ephemeral=ephemeral)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=ephemeral)
+
+
 def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
@@ -920,7 +993,7 @@ async def roster_rank_list(interaction: discord.Interaction) -> None:
         embed.description = "\n".join(
             f"**{r['name']}** → <@&{r['role_id']}>" for r in ranks
         )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_v2(interaction, embed, ephemeral=True)
 
 
 @roster_group.command(
@@ -1177,8 +1250,8 @@ def _kos_embed(entries: list[dict[str, Any]]) -> discord.Embed:
 @kos_group.command(name="view", description="Show the Kill-On-Sight list")
 async def kos_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
-    embed = _kos_embed(store["kos"])
-    await interaction.response.send_message(embed=embed)
+    embed = _brand(_kos_embed(store["kos"]), interaction.guild)
+    await _send_v2(interaction, embed)
 
 
 @kos_group.command(
@@ -2444,7 +2517,7 @@ async def gang_help(interaction: discord.Interaction) -> None:
     if interaction.client.user:
         embed.set_thumbnail(url=interaction.client.user.display_avatar.url)
     _brand(embed, interaction.guild, "Staff commands need the leadership role or admin")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_v2(interaction, embed, ephemeral=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -3388,7 +3461,7 @@ async def ticket_type_list(interaction: discord.Interaction) -> None:
             emoji = f"{t['emoji']} " if t.get("emoji") else ""
             lines.append(f"{emoji}**{t['name']}**{cat}")
         embed.description = "\n".join(lines)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_v2(interaction, embed, ephemeral=True)
 
 
 @ticket_group.command(
@@ -3746,7 +3819,7 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
             inline=False,
         )
     _brand(embed, interaction.guild)
-    await interaction.response.send_message(embed=embed)
+    await _send_v2(interaction, embed)
 
 
 @bot.tree.command(
@@ -3962,7 +4035,7 @@ async def strike_list(interaction: discord.Interaction, member: discord.Member |
             or "✨ Nobody has strikes."
         )
     _brand(embed, interaction.guild, f"Limit: {limit} strikes")
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await _send_v2(interaction, embed, ephemeral=True)
 
 
 @strike_group.command(name="remove", description="Remove a strike by its ID (leadership)")
@@ -4096,7 +4169,7 @@ async def bank_balance(interaction: discord.Interaction) -> None:
             inline=False,
         )
     _brand(embed, interaction.guild)
-    await interaction.response.send_message(embed=embed)
+    await _send_v2(interaction, embed)
 
 
 # ---- wars ------------------------------------------------------------------- #
@@ -4232,7 +4305,7 @@ async def war_view(interaction: discord.Interaction) -> None:
             inline=False,
         )
     _brand(embed, interaction.guild)
-    await interaction.response.send_message(embed=embed)
+    await _send_v2(interaction, embed)
 
 
 # ---- dashboard + member profile -------------------------------------------- #
@@ -4373,7 +4446,7 @@ async def gang_profile(interaction: discord.Interaction, member: discord.Member 
             inline=True,
         )
     _brand(embed, interaction.guild)
-    await interaction.response.send_message(embed=embed)
+    await _send_v2(interaction, embed)
 
 
 # --------------------------------------------------------------------------- #
