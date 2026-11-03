@@ -45,7 +45,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 ### Recruitment · Radio · Roles
 | Command | What it does | Who |
 |---|---|---|
-| `/eoi` | Application form: in-game name, role + activity dropdowns, montages, experience. Posts to the EOI channel with ✅/❌ votes and a leadership ⏱️ timer dropdown — when it ends the vote is tallied, the post locks, and accepted applicants are welcomed into the gang there (+ roster role, DM) | Everyone |
+| `/eoi` | Application form: in-game name, role + activity dropdowns, montages, experience. Posts to the EOI channel where current members vote ✅/❌, with a leadership ⏱️ timer dropdown — when it ends the vote is tallied, the post locks, and accepted applicants are welcomed into the gang there (+ roster role, DM) | Everyone |
 | `/eoi_post [message]` | Post an "Apply" button | Leadership |
 | `/radio new` / `view` / `panel` | Roll a new frequency / show it / post a reroll button | Leadership / Everyone |
 | `/role_menu add` / `remove` / `list` / `post` | Manage & post a self-serve role dropdown | Leadership |

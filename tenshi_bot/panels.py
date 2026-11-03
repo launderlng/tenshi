@@ -370,7 +370,7 @@ async def eoi_post(
         title="📝  Recruitment is Open",
         description=message
         or "Want to roll with us? Tap **📨 Apply** below and fill out the form — "
-        "leadership reviews and votes on every application.",
+        "the current members of the gang vote on every application.",
         color=EMBED_COLOR,
     )
     logo = interaction.client.user.display_avatar.url if interaction.client.user else None
@@ -380,12 +380,12 @@ async def eoi_post(
         name="How it works",
         value=(
             "1️⃣  Tap **📨 Apply** — name, role, activity, montages, experience\n"
-            "2️⃣  Leadership votes ✅ / ❌ on your application\n"
+            "2️⃣  Current members vote ✅ / ❌ on your application\n"
             "3️⃣  When voting closes, the result is posted here 🎉"
         ),
         inline=False,
     )
-    _brand(embed, interaction.guild, "Applications are reviewed by leadership")
+    _brand(embed, interaction.guild, "Applications are voted on by current members")
     await _send_card(interaction.channel, [embed], EOIPromptView)
     await interaction.response.send_message("EOI prompt posted. ✅", ephemeral=True)
 
