@@ -714,8 +714,6 @@ EOI_VIEW = EOIView()
 
 _EOI_ROLES = [
     ("Shooter", "🔫"),
-    ("Driver / Getaway", "🚗"),
-    ("Hacker / Tech", "💻"),
     ("Crafter / Supplier", "🛠️"),
     ("Money / Business", "💰"),
     ("Whatever's needed", "🧩"),
