@@ -521,6 +521,50 @@ def youtube_thumbnail(url: str | None) -> str | None:
     return f"https://img.youtube.com/vi/{match.group(1)}/hqdefault.jpg"
 
 
+async def youtube_preview(url: str) -> dict[str, Any] | None:
+    """Preview info for a YouTube link: watch url, title, channel and the
+    sharpest thumbnail that exists. Title/channel come from YouTube's public
+    oEmbed endpoint (no API key); if YouTube can't be reached we still return
+    the link + standard thumbnail so the EOI always gets a preview."""
+    match = _YT_RE.search(url or "")
+    if not match:
+        return None
+    vid = match.group(1)
+    info: dict[str, Any] = {
+        "url": f"https://youtu.be/{vid}",
+        "title": None,
+        "author": None,
+        "image": f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+    }
+    try:
+        import aiohttp
+
+        timeout = aiohttp.ClientTimeout(total=6)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                "https://www.youtube.com/oembed",
+                params={"url": f"https://www.youtube.com/watch?v={vid}", "format": "json"},
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    info["title"] = (data.get("title") or "").strip() or None
+                    info["author"] = (data.get("author_name") or "").strip() or None
+            # 1280x720 widescreen thumbnail when the video has one (no black bars)
+            maxres = f"https://i.ytimg.com/vi/{vid}/maxresdefault.jpg"
+            async with session.head(maxres) as resp:
+                if resp.status == 200:
+                    info["image"] = maxres
+    except Exception as exc:  # preview is best-effort; never block an EOI on it
+        log.info("YouTube preview lookup failed for %s: %s", vid, exc)
+    return info
+
+
+def _md_link_text(text: str, limit: int = 80) -> str:
+    """Make a title safe to put inside a [masked](link)."""
+    text = text.replace("[", "(").replace("]", ")").replace("*", "").replace("_", " ")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 # --------------------------------------------------------------------------- #
 # EOI voting view (persistent buttons)
 # --------------------------------------------------------------------------- #
@@ -826,10 +870,21 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
             inline=True,
         )
         montage_raw = self.montage.component.value.strip()
-        links = [ln.strip() for ln in montage_raw.splitlines() if ln.strip()]
+        links = [ln.strip() for ln in montage_raw.splitlines() if ln.strip()][:5]
+        previews = await asyncio.gather(*(youtube_preview(ln) for ln in links))
+        lines = []
+        for ln, pv in zip(links, previews):
+            if pv is None:
+                lines.append(f"🔗 {ln}")
+                continue
+            title = _md_link_text(pv["title"]) if pv["title"] else "Watch montage"
+            line = f"▶️ **[{title}]({pv['url']})**"
+            if pv["author"]:
+                line += f"\n╰ by {discord.utils.escape_markdown(pv['author'])}"
+            lines.append(line)
         embed.add_field(
             name=f"🎬 Montage{'s' if len(links) > 1 else ''}",
-            value="\n".join(f"• {ln}" for ln in links)[:1024] if links else "—",
+            value="\n".join(lines)[:1024] if lines else "—",
             inline=False,
         )
         embed.add_field(
@@ -837,10 +892,12 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
             value=self.experience.component.value.strip()[:1024] or "—",
             inline=False,
         )
-        # Preview the first montage's YouTube thumbnail as the big image.
-        thumb = youtube_thumbnail(montage_raw or None)
-        if thumb:
-            embed.set_image(url=thumb)
+        # Big preview: the first YouTube montage's thumbnail, with a watch link
+        # up top so it's the first thing voters see.
+        first = next((pv for pv in previews if pv), None)
+        if first:
+            embed.set_image(url=first["image"])
+            embed.description += f"\n\n🎬 **[▶  Watch montage]({first['url']})**"
         embed.add_field(
             name=_EOI_TIMER_FIELD, value="*Not set — leadership pick a timer below*", inline=False
         )
