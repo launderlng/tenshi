@@ -579,6 +579,7 @@ _EOI_TIMERS = [
     ("7 days", 168),
 ]
 _EOI_TIMER_FIELD = "⏱️ Voting closes"
+_EOI_VOUCH_FIELD = "🤝 Vouch"
 
 
 def _set_embed_field(embed: discord.Embed, name: str, value: str, inline: bool = False) -> None:
@@ -869,6 +870,7 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
             value=f"<t:{int(joined.timestamp())}:R>" if joined else "—",
             inline=True,
         )
+        embed.add_field(name=_EOI_VOUCH_FIELD, value="—", inline=True)
         montage_raw = self.montage.component.value.strip()
         links = [ln.strip() for ln in montage_raw.splitlines() if ln.strip()][:5]
         previews = await asyncio.gather(*(youtube_preview(ln) for ln in links))
@@ -921,7 +923,10 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
         }
         save_data(DATA)
         await interaction.followup.send(
-            f"Your EOI has been sent to {channel.mention}. Good luck. 🫡",
+            f"Your EOI has been sent to {channel.mention}. Good luck. 🫡\n"
+            "Want a **vouch**? Pick someone already in the gang below — they'll get a "
+            "DM to confirm, and their name shows on your application.",
+            view=VouchPickView(posted, user.id),
             ephemeral=True,
         )
         await send_log(
@@ -1031,6 +1036,212 @@ async def _close_eoi(guild: discord.Guild, store: dict[str, Any], mid: int, rec:
         f"{f'<@{uid}>' if uid else 'applicant'} (✅ {yes} · ❌ {no}).",
         category="eoi",
     )
+
+
+# ---- EOI vouches ------------------------------------------------------------ #
+#
+# An applicant can pick one member to vouch for them. That member is DM'd an
+# Accept / Decline button; on accept, their name is shown on the EOI post.
+# The DM buttons are DynamicItems so they keep working across restarts — all the
+# state they need (guild, EOI message, voucher) lives in the custom_id.
+
+
+class VouchDecisionButton(
+    discord.ui.DynamicItem[discord.ui.Button],
+    template=r"vouch:(?P<action>yes|no):(?P<guild>\d+):(?P<msg>\d+):(?P<voucher>\d+)",
+):
+    def __init__(self, action: str, guild_id: int, msg_id: int, voucher_id: int):
+        self.action = action
+        self.guild_id = guild_id
+        self.msg_id = msg_id
+        self.voucher_id = voucher_id
+        accept = action == "yes"
+        super().__init__(
+            discord.ui.Button(
+                label="Accept vouch" if accept else "Decline",
+                style=discord.ButtonStyle.success if accept else discord.ButtonStyle.secondary,
+                emoji="🤝" if accept else "✖️",
+                custom_id=f"vouch:{action}:{guild_id}:{msg_id}:{voucher_id}",
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(
+            match["action"], int(match["guild"]), int(match["msg"]), int(match["voucher"])
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        await _handle_vouch_decision(
+            interaction, self.action == "yes", self.guild_id, self.msg_id, self.voucher_id
+        )
+
+
+def _vouch_dm_view(guild_id: int, msg_id: int, voucher_id: int) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    view.add_item(VouchDecisionButton("yes", guild_id, msg_id, voucher_id))
+    view.add_item(VouchDecisionButton("no", guild_id, msg_id, voucher_id))
+    return view
+
+
+async def _handle_vouch_decision(
+    interaction: discord.Interaction, accepted: bool, guild_id: int, msg_id: int, voucher_id: int
+) -> None:
+    if interaction.user.id != voucher_id:
+        await interaction.response.send_message("This vouch request isn't for you.", ephemeral=True)
+        return
+    guild = bot.get_guild(guild_id)
+    if guild is None:
+        await interaction.response.edit_message(
+            content="That server is no longer available.", embed=None, view=None
+        )
+        return
+    store = guild_store(DATA, guild_id)
+    rec = store.get("eoi_vouches", {}).get(str(msg_id))
+    if not rec or rec.get("status") != "pending":
+        await interaction.response.edit_message(
+            content="This vouch request is no longer active.", embed=None, view=None
+        )
+        return
+    rec["status"] = "accepted" if accepted else "declined"
+    save_data(DATA)
+
+    voucher_mention = f"<@{voucher_id}>"
+    applicant_id = rec.get("applicant_id")
+
+    # Update the EOI post so voters see the (declined) vouch.
+    ch = guild.get_channel(rec.get("channel_id") or 0)
+    if ch is not None:
+        try:
+            eoi_msg = await ch.fetch_message(msg_id)
+            if eoi_msg.embeds:
+                e = eoi_msg.embeds[0]
+                _set_embed_field(
+                    e,
+                    _EOI_VOUCH_FIELD,
+                    f"✅ Vouched by {voucher_mention}"
+                    if accepted
+                    else f"✖️ Declined by {voucher_mention}",
+                    inline=True,
+                )
+                voting_done = store.get("eoi_timers", {}).get(str(msg_id), {}).get("done")
+                await eoi_msg.edit(embed=e, view=None if voting_done else EOIView())
+        except discord.HTTPException:
+            pass
+
+    # Close out the DM.
+    result = discord.Embed(
+        title="🤝 Vouch confirmed" if accepted else "Vouch declined",
+        description=(
+            f"You vouched for <@{applicant_id}> — your name now shows on their application. 🫡"
+            if accepted
+            else f"You declined to vouch for <@{applicant_id}>. No worries."
+        ),
+        color=0x22C55E if accepted else 0x6B7280,
+    )
+    await interaction.response.edit_message(embed=result, view=None)
+
+    # Let the applicant know when a vouch lands.
+    if accepted and applicant_id:
+        member = guild.get_member(applicant_id)
+        if member is not None:
+            try:
+                await member.send(
+                    embed=discord.Embed(
+                        description=f"✅ {voucher_mention} accepted your vouch on your "
+                        f"**{guild.name}** application.",
+                        color=0x22C55E,
+                    )
+                )
+            except discord.HTTPException:
+                pass
+
+    await send_log(
+        guild,
+        store,
+        f"🤝 Vouch {'accepted' if accepted else 'declined'} — {voucher_mention} for <@{applicant_id}>.",
+        category="eoi",
+    )
+
+
+class VouchPickView(discord.ui.View):
+    """Ephemeral picker an applicant sees after submitting an EOI: choose one
+    member to vouch for them. That member gets a DM to accept or decline."""
+
+    def __init__(self, eoi_msg: discord.Message, applicant_id: int):
+        super().__init__(timeout=900)
+        self.eoi_msg = eoi_msg
+        self.applicant_id = applicant_id
+
+    @discord.ui.select(
+        cls=discord.ui.UserSelect,
+        placeholder="🤝 Pick someone to vouch for you (optional)…",
+        min_values=1,
+        max_values=1,
+    )
+    async def pick(
+        self, interaction: discord.Interaction, select: discord.ui.UserSelect
+    ) -> None:
+        voucher = select.values[0]
+        if voucher.id == self.applicant_id:
+            await interaction.response.send_message(
+                "You can't vouch for yourself.", ephemeral=True
+            )
+            return
+        if getattr(voucher, "bot", False):
+            await interaction.response.send_message(
+                "Pick a real member, not a bot.", ephemeral=True
+            )
+            return
+
+        store = guild_store(DATA, interaction.guild_id)
+        applicant = interaction.user
+        dm_embed = discord.Embed(
+            title="🤝  Vouch request",
+            description=(
+                f"{applicant.mention} put in an application to join "
+                f"**{interaction.guild.name}** and picked **you** to vouch for them.\n\n"
+                "Accept and your name is shown on their application for everyone voting to see."
+            ),
+            color=EMBED_COLOR,
+        )
+        dm_embed.set_thumbnail(url=applicant.display_avatar.url)
+        _brand(dm_embed, interaction.guild)
+        dm_view = _vouch_dm_view(interaction.guild_id, self.eoi_msg.id, voucher.id)
+        try:
+            await voucher.send(embed=dm_embed, view=dm_view)
+        except discord.Forbidden:
+            await interaction.response.send_message(
+                f"Couldn't DM {voucher.mention} — their DMs are closed. "
+                "Ask them to open DMs, then try another vouch.",
+                ephemeral=True,
+            )
+            return
+
+        store.setdefault("eoi_vouches", {})[str(self.eoi_msg.id)] = {
+            "voucher_id": voucher.id,
+            "applicant_id": self.applicant_id,
+            "channel_id": self.eoi_msg.channel.id,
+            "status": "pending",
+        }
+        save_data(DATA)
+
+        try:
+            e = self.eoi_msg.embeds[0]
+            _set_embed_field(
+                e, _EOI_VOUCH_FIELD, f"⏳ Pending — {voucher.mention}", inline=True
+            )
+            await self.eoi_msg.edit(embed=e, view=EOIView())
+        except (discord.HTTPException, IndexError):
+            pass
+
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(
+            content=f"🤝 Asked {voucher.mention} to vouch for you — waiting on them to accept.",
+            view=self,
+        )
+        self.stop()
 
 
 @tasks.loop(minutes=1)

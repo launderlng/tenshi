@@ -62,6 +62,7 @@ async def on_ready() -> None:
     bot.add_view(DashboardView())
     bot.add_view(WarPanelView())
     bot.add_view(HelpView())
+    bot.add_dynamic_items(VouchDecisionButton)
     if not ticket_autoclose_loop.is_running():
         ticket_autoclose_loop.start()
     if not eoi_timer_loop.is_running():
