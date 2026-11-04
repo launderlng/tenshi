@@ -805,14 +805,14 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
             max_length=600,
         ),
     )
-    experience = discord.ui.Label(
-        text="Experience",
-        description="Your loadout, who can vouch for you, gangs you've been in",
-        component=discord.ui.TextInput(
-            style=discord.TextStyle.paragraph,
-            placeholder="Loadout · vouches · previous gangs…",
+    voucher = discord.ui.Label(
+        text="Vouch (optional)",
+        description="Pick a current member to vouch for you — they get a DM to confirm",
+        component=discord.ui.UserSelect(
+            placeholder="Choose someone to vouch for you…",
+            min_values=0,
+            max_values=1,
             required=False,
-            max_length=900,
         ),
     )
 
@@ -889,11 +889,6 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
             value="\n".join(lines)[:1024] if lines else "—",
             inline=False,
         )
-        embed.add_field(
-            name="🧾 Experience",
-            value=self.experience.component.value.strip()[:1024] or "—",
-            inline=False,
-        )
         # Big preview: the first YouTube montage's thumbnail, with a watch link
         # up top so it's the first thing voters see.
         first = next((pv for pv in previews if pv), None)
@@ -922,11 +917,28 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
             "ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
         }
         save_data(DATA)
+
+        # Optional vouch picked right in the form.
+        vouch_vals = self.voucher.component.values
+        voucher = vouch_vals[0] if vouch_vals else None
+        vouch_note = ""
+        if voucher is not None:
+            if voucher.id == user.id:
+                vouch_note = "\n⚠️ You can't vouch for yourself — that was skipped."
+            elif getattr(voucher, "bot", False):
+                vouch_note = "\n⚠️ You picked a bot to vouch — that was skipped."
+            elif await _request_vouch(interaction.guild, store, posted, user, voucher):
+                vouch_note = (
+                    f"\n🤝 Asked {voucher.mention} to vouch — they'll get a DM to confirm."
+                )
+            else:
+                vouch_note = (
+                    f"\n⚠️ Couldn't DM {voucher.mention} (their DMs are closed), "
+                    "so no vouch was requested."
+                )
+
         await interaction.followup.send(
-            f"Your EOI has been sent to {channel.mention}. Good luck. 🫡\n"
-            "Want a **vouch**? Pick someone already in the gang below — they'll get a "
-            "DM to confirm, and their name shows on your application.",
-            view=VouchPickView(posted, user.id),
+            f"Your EOI has been sent to {channel.mention}. Good luck. 🫡{vouch_note}",
             ephemeral=True,
         )
         await send_log(
@@ -1164,84 +1176,47 @@ async def _handle_vouch_decision(
     )
 
 
-class VouchPickView(discord.ui.View):
-    """Ephemeral picker an applicant sees after submitting an EOI: choose one
-    member to vouch for them. That member gets a DM to accept or decline."""
-
-    def __init__(self, eoi_msg: discord.Message, applicant_id: int):
-        super().__init__(timeout=900)
-        self.eoi_msg = eoi_msg
-        self.applicant_id = applicant_id
-
-    @discord.ui.select(
-        cls=discord.ui.UserSelect,
-        placeholder="🤝 Pick someone to vouch for you (optional)…",
-        min_values=1,
-        max_values=1,
+async def _request_vouch(
+    guild: discord.Guild,
+    store: dict[str, Any],
+    eoi_msg: discord.Message,
+    applicant: discord.abc.User,
+    voucher: discord.abc.User,
+) -> bool:
+    """DM `voucher` asking them to vouch for `applicant`'s EOI, and flag the EOI
+    post as pending. Returns False (storing nothing) if they can't be DM'd."""
+    dm_embed = discord.Embed(
+        title="🤝  Vouch request",
+        description=(
+            f"{applicant.mention} put in an application to join **{guild.name}** "
+            f"and picked **you** to vouch for them.\n\n"
+            "Accept and your name is shown on their application for everyone voting to see."
+        ),
+        color=EMBED_COLOR,
     )
-    async def pick(
-        self, interaction: discord.Interaction, select: discord.ui.UserSelect
-    ) -> None:
-        voucher = select.values[0]
-        if voucher.id == self.applicant_id:
-            await interaction.response.send_message(
-                "You can't vouch for yourself.", ephemeral=True
-            )
-            return
-        if getattr(voucher, "bot", False):
-            await interaction.response.send_message(
-                "Pick a real member, not a bot.", ephemeral=True
-            )
-            return
+    dm_embed.set_thumbnail(url=applicant.display_avatar.url)
+    _brand(dm_embed, guild)
+    dm_view = _vouch_dm_view(guild.id, eoi_msg.id, voucher.id)
+    try:
+        await voucher.send(embed=dm_embed, view=dm_view)
+    except discord.Forbidden:
+        return False
 
-        store = guild_store(DATA, interaction.guild_id)
-        applicant = interaction.user
-        dm_embed = discord.Embed(
-            title="🤝  Vouch request",
-            description=(
-                f"{applicant.mention} put in an application to join "
-                f"**{interaction.guild.name}** and picked **you** to vouch for them.\n\n"
-                "Accept and your name is shown on their application for everyone voting to see."
-            ),
-            color=EMBED_COLOR,
-        )
-        dm_embed.set_thumbnail(url=applicant.display_avatar.url)
-        _brand(dm_embed, interaction.guild)
-        dm_view = _vouch_dm_view(interaction.guild_id, self.eoi_msg.id, voucher.id)
-        try:
-            await voucher.send(embed=dm_embed, view=dm_view)
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                f"Couldn't DM {voucher.mention} — their DMs are closed. "
-                "Ask them to open DMs, then try another vouch.",
-                ephemeral=True,
-            )
-            return
+    store.setdefault("eoi_vouches", {})[str(eoi_msg.id)] = {
+        "voucher_id": voucher.id,
+        "applicant_id": applicant.id,
+        "channel_id": eoi_msg.channel.id,
+        "status": "pending",
+    }
+    save_data(DATA)
 
-        store.setdefault("eoi_vouches", {})[str(self.eoi_msg.id)] = {
-            "voucher_id": voucher.id,
-            "applicant_id": self.applicant_id,
-            "channel_id": self.eoi_msg.channel.id,
-            "status": "pending",
-        }
-        save_data(DATA)
-
-        try:
-            e = self.eoi_msg.embeds[0]
-            _set_embed_field(
-                e, _EOI_VOUCH_FIELD, f"⏳ Pending — {voucher.mention}", inline=True
-            )
-            await self.eoi_msg.edit(embed=e, view=EOIView())
-        except (discord.HTTPException, IndexError):
-            pass
-
-        for child in self.children:
-            child.disabled = True
-        await interaction.response.edit_message(
-            content=f"🤝 Asked {voucher.mention} to vouch for you — waiting on them to accept.",
-            view=self,
-        )
-        self.stop()
+    try:
+        e = eoi_msg.embeds[0]
+        _set_embed_field(e, _EOI_VOUCH_FIELD, f"⏳ Pending — {voucher.mention}", inline=True)
+        await eoi_msg.edit(embed=e, view=EOIView())
+    except (discord.HTTPException, IndexError):
+        pass
+    return True
 
 
 @tasks.loop(minutes=1)

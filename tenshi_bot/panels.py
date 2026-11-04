@@ -379,7 +379,7 @@ async def eoi_post(
     embed.add_field(
         name="How it works",
         value=(
-            "1️⃣  Tap **📨 Apply** — name, role, activity, montages, experience\n"
+            "1️⃣  Tap **📨 Apply** — name, role, activity, montages, pick a voucher\n"
             "2️⃣  Current members vote ✅ / ❌ on your application\n"
             "3️⃣  When voting closes, the result is posted here 🎉"
         ),
