@@ -93,14 +93,14 @@ def _settings_cards(guild: discord.Guild, store: dict[str, Any], avatar: str | N
     )
     if avatar:
         head.set_thumbnail(url=avatar)
-    roles = discord.Embed(title="👑  Roles", description="\n".join(line(k) for k in _ROLE_KEYS), color=0xA855F7)
-    chans = discord.Embed(title="📁  Channels", description="\n".join(line(k) for k in _MAIN_CHANNEL_KEYS), color=0x0EA5E9)
-    logs = discord.Embed(title="📝  Logs", description="\n".join(line(k) for k in _LOG_KEYS), color=0x6B7280)
+    roles = discord.Embed(title="👑  Roles", description="\n".join(line(k) for k in _ROLE_KEYS), color=PURPLE)
+    chans = discord.Embed(title="📁  Channels", description="\n".join(line(k) for k in _MAIN_CHANNEL_KEYS), color=SKY)
+    logs = discord.Embed(title="📝  Logs", description="\n".join(line(k) for k in _LOG_KEYS), color=MUTED)
     issues = _settings_health(guild, store)
     health = discord.Embed(
         title="🩺  Health check",
         description="\n".join(f"⚠️ {i}" for i in issues[:12]) if issues else "✅ Everything looks good.",
-        color=0xF59E0B if issues else 0x22C55E,
+        color=WARN if issues else OK,
     )
     _brand(
         health, guild,
@@ -136,7 +136,7 @@ async def _apply_setting(
             f"Now set to {shown}\n\n`{_bar(done, len(CONFIG_SETTINGS), 18)}` "
             f"**{done}/{len(CONFIG_SETTINGS)}** configured"
         ),
-        color=0x22C55E if obj is not None else 0x6B7280,
+        color=OK if obj is not None else MUTED,
     )
     _brand(e, interaction.guild, "See everything with /settings view")
     await _send_card(interaction, [e], ephemeral=True)
@@ -209,7 +209,7 @@ async def settings_logs(interaction: discord.Interaction, channel: discord.TextC
         title="✅  📝 All logs → one channel",
         description=f"All **{len(_LOG_KEYS)}** log types now go to {channel.mention}.\n"
         "-# Split any back out with `/settings channel`.",
-        color=0x22C55E,
+        color=OK,
     )
     _brand(e, interaction.guild)
     await _send_card(interaction, [e], ephemeral=True)

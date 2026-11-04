@@ -53,7 +53,7 @@ def _prio_label(order: dict[str, Any] | None) -> str:
 def _order_embed(order: dict[str, Any]) -> discord.Embed:
     paid = order.get("paid", False)
     closed = order.get("status", "open") == "closed"
-    color = 0x22C55E if paid else EMBED_COLOR
+    color = OK if paid else EMBED_COLOR
     ttype = order.get("type") or "Order"
     status = "🔒 Closed" if closed else ("🟢 Paid" if paid else "🔴 Unpaid")
 
@@ -1215,7 +1215,7 @@ async def ticket_autoclose_loop() -> None:
                                     f"⏰ This ticket has been quiet for **{hours}h**. It will "
                                     f"**auto-close in {grace // 3600}h** unless someone replies."
                                 ),
-                                color=0xF59E0B,
+                                color=WARN,
                             ),
                         )
                         order["autoclose_warn_msg"] = w.id
@@ -1308,7 +1308,7 @@ async def ticket_stats(interaction: discord.Interaction) -> None:
         if h:
             b = board.setdefault(h, {"n": 0})
             b["n"] += 1
-    lb = discord.Embed(title="🏆  Staff Leaderboard", color=0xF59E0B)
+    lb = discord.Embed(title="🏆  Staff Leaderboard", color=WARN)
     if board:
         medals = ["🥇", "🥈", "🥉"]
         ranked = sorted(board.items(), key=lambda kv: -kv[1]["n"])[:10]

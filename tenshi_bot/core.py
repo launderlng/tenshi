@@ -37,6 +37,24 @@ ALLOWED_GUILD_IDS = {int(x) for x in _allowed_raw.split(",") if x.isdigit()}
 
 EMBED_COLOR = 0xE11D48  # deep red, fits the "gang" vibe
 
+# --------------------------------------------------------------------------- #
+# Palette — one source of truth for every embed colour.
+#
+# Status colours carry meaning across the whole bot, so an accept always looks
+# like an accept and a loss always looks like a loss. Accent colours give each
+# feature its own identity (and double as the log-category hues).
+# --------------------------------------------------------------------------- #
+OK = 0x22C55E       # success · accepted · win · paid · active
+BAD = 0xDC2626      # danger · loss · strike · over the limit
+WARN = 0xF59E0B     # pending · priority · needs attention
+MUTED = 0x6B7280    # closed · denied · inactive · cancelled
+
+BLUE = 0x3B82F6     # roster
+PURPLE = 0xA855F7   # radio · roles
+SKY = 0x0EA5E9      # tickets · channels
+PINK = 0xEC4899     # members
+TEAL = 0x14B8A6     # joins & leaves
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
@@ -432,15 +450,15 @@ def now_stamp() -> str:
 
 LOG_CATEGORIES = {
     # category -> (emoji, label, color)
-    "roster": ("📋", "Roster", 0x3B82F6),
-    "kos": ("💀", "KOS", 0xDC2626),
-    "radio": ("📻", "Radio", 0xA855F7),
-    "eoi": ("📨", "Recruitment", 0x10B981),
-    "members": ("🎭", "Roles", 0xEC4899),
-    "joins": ("🚪", "Joins & Leaves", 0x14B8A6),
-    "tickets": ("🎫", "Tickets", 0x0EA5E9),
-    "orders": ("💰", "Orders", 0xF59E0B),
-    "config": ("⚙️", "Config", 0x6B7280),
+    "roster": ("📋", "Roster", BLUE),
+    "kos": ("💀", "KOS", BAD),
+    "radio": ("📻", "Radio", PURPLE),
+    "eoi": ("📨", "Recruitment", OK),
+    "members": ("🎭", "Roles", PINK),
+    "joins": ("🚪", "Joins & Leaves", TEAL),
+    "tickets": ("🎫", "Tickets", SKY),
+    "orders": ("💰", "Orders", WARN),
+    "config": ("⚙️", "Config", MUTED),
     "activity": ("•", "Activity", EMBED_COLOR),
 }
 
@@ -979,7 +997,7 @@ async def _close_eoi(guild: discord.Guild, store: dict[str, Any], mid: int, rec:
         pass
     if msg is not None and msg.embeds:
         e = msg.embeds[0]
-        e.colour = discord.Colour(0x22C55E if passed else 0x6B7280)
+        e.colour = discord.Colour(OK if passed else MUTED)
         e.title = (("✅  ACCEPTED · " if passed else "❌  DENIED · ") + (e.title or "").replace("📨  ", ""))[:256]
         _set_embed_field(e, _EOI_TIMER_FIELD, f"🔒 Closed <t:{now}:R>")
         _set_embed_field(
@@ -1005,7 +1023,7 @@ async def _close_eoi(guild: discord.Guild, store: dict[str, Any], mid: int, rec:
             description=(
                 f"<@{uid}> has been **made into the gang**." if uid else "An applicant made it in."
             ) + f"\n-# Final vote: ✅ {yes} · ❌ {no}",
-            color=0x22C55E,
+            color=OK,
         )
         if member is not None:
             ann.set_thumbnail(url=member.display_avatar.url)
@@ -1037,7 +1055,7 @@ async def _close_eoi(guild: discord.Guild, store: dict[str, Any], mid: int, rec:
                         if passed
                         else f"Your EOI for **{guild.name}** wasn't accepted this time."
                     ),
-                    color=0x22C55E if passed else 0x6B7280,
+                    color=OK if passed else MUTED,
                 )
             )
         except discord.HTTPException:
@@ -1149,7 +1167,7 @@ async def _handle_vouch_decision(
             if accepted
             else f"You declined to vouch for <@{applicant_id}>. No worries."
         ),
-        color=0x22C55E if accepted else 0x6B7280,
+        color=OK if accepted else MUTED,
     )
     await interaction.response.edit_message(embed=result, view=None)
 
@@ -1162,7 +1180,7 @@ async def _handle_vouch_decision(
                     embed=discord.Embed(
                         description=f"✅ {voucher_mention} accepted your vouch on your "
                         f"**{guild.name}** application.",
-                        color=0x22C55E,
+                        color=OK,
                     )
                 )
             except discord.HTTPException:

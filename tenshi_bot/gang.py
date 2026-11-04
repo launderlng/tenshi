@@ -50,7 +50,7 @@ async def strike_add(interaction: discord.Interaction, member: discord.Member, r
     embed = discord.Embed(
         title="⚠️  Strike issued",
         description=f"{member.mention} now has **{count}/{limit}** strikes\n{bar}",
-        color=0xF59E0B if count < limit else 0xDC2626,
+        color=WARN if count < limit else BAD,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     embed.add_field(name="Reason", value=reason[:1024], inline=False)
@@ -69,7 +69,7 @@ async def strike_add(interaction: discord.Interaction, member: discord.Member, r
         dm = discord.Embed(
             title=f"⚠️  You received a strike in {interaction.guild.name}",
             description=f"You're on **{count}/{limit}** strikes.\n**Reason:** {reason[:1000]}",
-            color=0xF59E0B,
+            color=WARN,
         )
         await member.send(embed=dm)
     except discord.HTTPException:
@@ -86,7 +86,7 @@ async def strike_add(interaction: discord.Interaction, member: discord.Member, r
 async def strike_list(interaction: discord.Interaction, member: discord.Member | None = None) -> None:
     store = guild_store(DATA, interaction.guild_id)
     limit = store.get("strike_limit", 3)
-    embed = discord.Embed(color=0xF59E0B, timestamp=datetime.datetime.now(datetime.timezone.utc))
+    embed = discord.Embed(color=WARN, timestamp=datetime.datetime.now(datetime.timezone.utc))
     if member is not None:
         mine = [s for s in store["strikes"] if s["user_id"] == member.id]
         embed.title = f"⚠️  Strikes · {member.display_name} ({len(mine)}/{limit})"
@@ -173,10 +173,10 @@ def _find_war(store, enemy: str, active_only: bool = True) -> dict | None:
 def _war_verdict(war: dict) -> tuple[str, int]:
     w, l = war.get("wins", 0), war.get("losses", 0)
     if w > l:
-        return "🏆 VICTORY", 0x22C55E
+        return "🏆 VICTORY", OK
     if l > w:
-        return "💀 DEFEAT", 0x6B7280
-    return "🤝 DRAW", 0xF59E0B
+        return "💀 DEFEAT", MUTED
+    return "🤝 DRAW", WARN
 
 
 def _war_card(war: dict, guild: discord.Guild) -> discord.Embed:
@@ -186,7 +186,7 @@ def _war_card(war: dict, guild: discord.Guild) -> discord.Embed:
     target = war.get("first_to")
     if active:
         status = f"🔴 **LIVE** · round **{total + 1}**" + (f" · first to **{target}**" if target else "")
-        color = 0xDC2626
+        color = BAD
     else:
         verdict, color = _war_verdict(war)
         status = f"**{verdict}** · ended <t:{war.get('end', war['start'])}:R>"
@@ -421,7 +421,7 @@ async def war_end(interaction: discord.Interaction, enemy: str) -> None:
 async def war_view(interaction: discord.Interaction) -> None:
     store = guild_store(DATA, interaction.guild_id)
     active = [w for w in store["wars"] if w.get("active", True)]
-    embed = discord.Embed(title="⚔️  Active Wars", color=0xDC2626)
+    embed = discord.Embed(title="⚔️  Active Wars", color=BAD)
     if not active:
         embed.description = "☮️ No active wars — `/war start` to begin one."
     for w in active[:20]:
@@ -450,7 +450,7 @@ async def war_history(interaction: discord.Interaction) -> None:
     embed = discord.Embed(
         title="📜  War History",
         description=f"🏆 **{won}** won · 💀 **{lost}** lost" if done else "No finished wars yet.",
-        color=0x6B7280,
+        color=MUTED,
     )
     for w in done:
         verdict, _ = _war_verdict(w)
@@ -499,7 +499,7 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     ops = discord.Embed(
         title="🎫  Tickets",
         description=f"**{len(open_o)}** open · **{len(orders)}** all-time",
-        color=0x0EA5E9,
+        color=SKY,
     )
     ops.add_field(
         name="📊 Opened per day · last 14d",
@@ -514,7 +514,7 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
             lines.append(f"{dot} `{_bar(n, len(open_o), 10)}` **{n}** {name}")
         ops.add_field(name="🚩 Open by priority", value="\n".join(lines), inline=False)
 
-    wars = discord.Embed(title="⚔️  Wars", color=0xDC2626)
+    wars = discord.Embed(title="⚔️  Wars", color=BAD)
     if active_wars:
         rows = []
         for w in active_wars[:5]:
@@ -534,7 +534,7 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
                 description="\n".join(
                     f"`{_bar(n, top, 10)}` **{n}** · {name}" for name, n, _ in rank_rows[:8]
                 ),
-                color=0xA855F7,
+                color=PURPLE,
             )
         )
     _brand(cards[-1], guild, "🔄 tap Refresh for live numbers")

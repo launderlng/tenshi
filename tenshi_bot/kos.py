@@ -15,7 +15,7 @@ def _kos_role(guild: discord.Guild, store: dict[str, Any]) -> discord.Role | Non
 def _kos_embed(entries: list[dict[str, Any]]) -> discord.Embed:
     embed = discord.Embed(
         title="💀  Kill On Sight",
-        color=0xDC2626,
+        color=BAD,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     if not entries:
@@ -365,7 +365,7 @@ def _proposal_embed(guild: discord.Guild, prop: dict[str, Any]) -> discord.Embed
     embed = discord.Embed(
         title="💀  KOS Roster — Approved" if approved else "🗳️  KOS Roster — Approve",
         description=prop.get("text") or "*No details.*",
-        color=0x22C55E if approved else EMBED_COLOR,
+        color=OK if approved else EMBED_COLOR,
         timestamp=datetime.datetime.now(datetime.timezone.utc),
     )
     roster = prop.get("roster", [])
@@ -539,7 +539,7 @@ class RosterProposalView(discord.ui.View):
         final = discord.Embed(
             title="💀  KOS Roster",
             description=prop.get("text") or "",
-            color=0xDC2626,
+            color=BAD,
             timestamp=datetime.datetime.now(datetime.timezone.utc),
         )
         final.add_field(
