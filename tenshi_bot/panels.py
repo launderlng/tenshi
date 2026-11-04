@@ -9,7 +9,7 @@ from .settings import *  # noqa: F401,F403
 # ---- /role_menu ------------------------------------------------------------- #
 
 @role_menu_group.command(
-    name="add", description="Add a role to the self-serve menu (leadership only)"
+    name="add", description="Add a role to the self-serve menu (leadership)"
 )
 @app_commands.describe(
     role="A role members can give themselves",
@@ -53,7 +53,7 @@ async def role_menu_add(
 
 
 @role_menu_group.command(
-    name="remove", description="Remove a role from the self-serve menu (leadership only)"
+    name="remove", description="Remove a role from the self-serve menu (leadership)"
 )
 @app_commands.describe(role="The role to take out of the menu")
 async def role_menu_remove(
@@ -96,7 +96,7 @@ async def role_menu_list(interaction: discord.Interaction) -> None:
 
 @role_menu_group.command(
     name="post",
-    description="Post the self-serve role menu in this channel (leadership only)",
+    description="Post the self-serve role menu in this channel (leadership)",
 )
 @app_commands.describe(
     title="Optional heading for the menu",
@@ -270,7 +270,7 @@ RADIO_PANEL_VIEW = RadioPanelView()
 
 @radio_group.command(
     name="new",
-    description="Roll a new random radio frequency and post it here (leadership only)",
+    description="Roll a new random radio frequency and post it here (leadership)",
 )
 async def radio_new(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -317,7 +317,7 @@ async def radio_view(interaction: discord.Interaction) -> None:
 
 @radio_group.command(
     name="panel",
-    description="Post a radio panel with a New Radio button (leadership only)",
+    description="Post a radio panel with a New Radio button (leadership)",
 )
 async def radio_panel(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -414,10 +414,11 @@ _HELP_PAGES: dict[str, tuple[str, str, str]] = {
     "home": ("🏠", "Tenshi — Command Guide",
              "**Pick a category below** to see its commands.\n\n"
              "**Quick start**\n"
-             "1️⃣ `/settings` — point me at your channels & roles\n"
+             "1️⃣ `/settings view` — point me at your channels & roles\n"
              "2️⃣ `/roster import_roles` — your ranks from your server roles\n"
              "3️⃣ `/ticket type_add` → `/ticket panel` — open for orders\n"
-             "4️⃣ `/gang dashboard` — your live command center"),
+             "4️⃣ `/eoi_post` — put up the Apply panel for recruits\n"
+             "5️⃣ `/gang dashboard` — your live command center"),
     "gang": ("🐉", "Gang",
              "`/gang dashboard` — live command center with graphs + 🔄 refresh\n"
              "`/gang profile [@member]` — rank, KOS, strikes, tickets\n"
@@ -442,9 +443,11 @@ _HELP_PAGES: dict[str, tuple[str, str, str]] = {
                 "`/close [reason]` — transcript to staff + a short DM to the customer\n"
                 "In a ticket: 🙋 Claim · 💰 Paid · 🚩 Priority · 🔒 Close"),
     "community": ("📨", "Recruitment · Radio · Roles",
-                  "`/eoi` — apply · `/eoi_post` — post Apply panel · ⏱️ vote timer on each EOI\n"
-                  "`/radio new` · `view` · `panel`\n"
-                  "`/role_menu add` · `remove` · `list` · `post`"),
+                  "`/eoi` · `/eoi_post` — apply / post the Apply panel\n"
+                  "EOI form: role + activity, montage (auto YouTube preview), and pick a voucher\n"
+                  "Members vote ✅/❌ · ⏱️ leadership sets a timer · vouch runs by DM\n"
+                  "`/radio new` · `view` · `panel` — rolling gang frequency\n"
+                  "`/role_menu add` · `remove` · `list` · `post` — self-serve roles"),
     "settings": ("⚙️", "Settings",
                  "`/settings view` — setup progress, everything set, 🩺 health check\n"
                  "`/settings channel` · `/settings role` — set one (leave empty to clear)\n"

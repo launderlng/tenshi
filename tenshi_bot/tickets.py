@@ -899,7 +899,7 @@ async def ticket_type_add(
 
 
 @ticket_group.command(
-    name="type_remove", description="Remove a ticket type (leadership only)"
+    name="type_remove", description="Remove a ticket type (leadership)"
 )
 @app_commands.describe(name="The ticket type to remove")
 @app_commands.autocomplete(name=ticket_type_autocomplete)
@@ -935,7 +935,7 @@ async def ticket_type_remove(interaction: discord.Interaction, name: str) -> Non
 
 @ticket_group.command(
     name="type_clear",
-    description="Remove ALL ticket types at once (leadership only)",
+    description="Remove ALL ticket types at once (leadership)",
 )
 async def ticket_type_clear(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):

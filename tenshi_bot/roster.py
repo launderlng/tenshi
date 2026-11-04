@@ -158,7 +158,7 @@ async def rank_autocomplete(
 
 @roster_group.command(
     name="rank_set",
-    description="Map a rank name to a server role (leadership only)",
+    description="Map a rank name to a server role (leadership)",
 )
 @app_commands.describe(
     name="Rank name (e.g. OG, Prospect, Driver)",
@@ -202,7 +202,7 @@ async def roster_rank_set(
 
 
 @roster_group.command(
-    name="rank_remove", description="Remove a configured rank (leadership only)"
+    name="rank_remove", description="Remove a configured rank (leadership)"
 )
 @app_commands.describe(name="The rank name to remove")
 @app_commands.autocomplete(name=rank_autocomplete)
@@ -251,7 +251,7 @@ async def roster_rank_list(interaction: discord.Interaction) -> None:
 
 @roster_group.command(
     name="import_roles",
-    description="Add every server role as a rank in one go (leadership only)",
+    description="Add every server role as a rank in one go (leadership)",
 )
 async def roster_import_roles(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):
@@ -448,7 +448,7 @@ async def roster_remove(
 
 @roster_group.command(
     name="reset",
-    description="Wipe the roster list (keeps everyone's role) (leadership only)",
+    description="Wipe the roster list (keeps everyone's role) (leadership)",
 )
 async def roster_reset(interaction: discord.Interaction) -> None:
     if not is_leadership(interaction.user):

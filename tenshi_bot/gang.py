@@ -480,6 +480,10 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     open_o = [o for o in orders if o.get("status", "open") != "closed"]
     recent_strikes = sum(1 for s in store["strikes"] if s["ts"] >= now - 30 * 86400)
     active_wars = [w for w in store["wars"] if w.get("active", True)]
+    eoi_timers = store.get("eoi_timers", {})
+    open_eois = sum(
+        1 for mid in store.get("eoi_apps", {}) if not eoi_timers.get(mid, {}).get("done")
+    )
 
     hq = discord.Embed(
         title=f"🐉  {guild.name} — Command Center",
@@ -491,6 +495,7 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     hq.add_field(name="👥 Ranked", value=f"**{len(ranked_ids)}**")
     hq.add_field(name="💀 On KOS", value=f"**{len(store['kos'])}**")
     hq.add_field(name="⚠️ Strikes 30d", value=f"**{recent_strikes}**")
+    hq.add_field(name="📨 Open EOIs", value=f"**{open_eois}**")
     hq.add_field(name="📻 Radio", value=f"`{store.get('radio_freq') or '—'}`")
     if guild.banner:
         hq.set_image(url=guild.banner.url)

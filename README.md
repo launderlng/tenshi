@@ -53,7 +53,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 ### Gang
 | Command | What it does | Who |
 |---|---|---|
-| `/gang dashboard` | One-glance overview: ranked members, KOS, open/urgent tickets, strikes (30d), wars, radio | Everyone |
+| `/gang dashboard` | One-glance overview: ranked members, KOS, open EOIs, open/urgent tickets, strikes (30d), wars, radio | Everyone |
 | `/gang profile [@member]` | Rank, KOS status, strikes bar, join date, tickets opened/handled | Everyone |
 | `/strike add @member <reason>` | Give a strike (DMs them, warns at the limit) | Leadership |
 | `/strike list [@member]` / `remove <id>` / `clear @member` / `limit <n>` | Strike board, per-member history, remove/clear, set the limit (default 3) | Leadership (list: everyone) |
