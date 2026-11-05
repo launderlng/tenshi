@@ -453,7 +453,7 @@ _HELP_PAGES: dict[str, tuple[str, str, str]] = {
     "community": ("📨", "Recruitment · Radio · Roles",
                   "`/eoi` · `/eoi_post` — apply / post the Apply panel\n"
                   "EOI form: role + activity, montage (auto YouTube preview), and pick a voucher\n"
-                  "Members vote ✅/❌ · ⏱️ leadership sets a timer · vouch runs by DM\n"
+                  "Members vote ✅/❌ · ⏱️ auto 24h timer (leadership can change) · vouch runs by DM\n"
                   "`/radio new` · `view` · `panel` — rolling gang frequency\n"
                   "`/role_menu add` · `remove` · `list` · `post` — self-serve roles"),
     "settings": ("⚙️", "Settings",

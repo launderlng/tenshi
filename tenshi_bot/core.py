@@ -598,6 +598,7 @@ _EOI_TIMERS = [
 ]
 _EOI_TIMER_FIELD = "⏱️ Voting closes"
 _EOI_VOUCH_FIELD = "🤝 Vouch"
+_EOI_DEFAULT_HOURS = 24  # every EOI auto-closes this many hours after it's posted
 
 
 def _set_embed_field(embed: discord.Embed, name: str, value: str, inline: bool = False) -> None:
@@ -731,7 +732,7 @@ class EOIView(discord.ui.View):
 
     @discord.ui.select(
         custom_id="eoi:timer",
-        placeholder="⏱️  Leadership: choose when voting closes…",
+        placeholder="⏱️  Leadership: change the 24h deadline…",
         row=1,
         options=[
             discord.SelectOption(label=f"Close voting in {label}", value=str(h), emoji="⏱️")
@@ -913,8 +914,16 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
         if first:
             embed.set_image(url=first["image"])
             embed.description += f"\n\n🎬 **[▶  Watch montage]({first['url']})**"
+        # Every EOI auto-closes after 24h; leadership can change it with the
+        # dropdown below.
+        default_ends = (
+            int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+            + _EOI_DEFAULT_HOURS * 3600
+        )
         embed.add_field(
-            name=_EOI_TIMER_FIELD, value="*Not set — leadership pick a timer below*", inline=False
+            name=_EOI_TIMER_FIELD,
+            value=f"<t:{default_ends}:R> · <t:{default_ends}:f>\n-# auto {_EOI_DEFAULT_HOURS}h — leadership can change below",
+            inline=False,
         )
         embed.set_footer(text="✅ 0   •   ❌ 0")
 
@@ -933,6 +942,13 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
             "ign": ign,
             "role": role,
             "ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
+        }
+        # Arm the automatic 24h close. The dropdown overwrites this if leadership
+        # picks a different length.
+        store.setdefault("eoi_timers", {})[str(posted.id)] = {
+            "ends": default_ends,
+            "channel_id": channel.id,
+            "set_by": None,
         }
         save_data(DATA)
 
