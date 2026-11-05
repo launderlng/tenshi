@@ -338,6 +338,8 @@ async def radio_panel(interaction: discord.Interaction) -> None:
 
 @bot.tree.command(name="eoi", description="Apply to the gang — fill out an EOI form")
 async def eoi(interaction: discord.Interaction) -> None:
+    if await _block_if_already_member(interaction):
+        return
     await interaction.response.send_modal(EOIModal())
 
 
@@ -413,6 +415,8 @@ class EOIPromptView(discord.ui.View):
     async def apply(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
+        if await _block_if_already_member(interaction):
+            return
         await interaction.response.send_modal(EOIModal())
 
 

@@ -791,6 +791,22 @@ _EOI_ACTIVITY = [
 ]
 
 
+async def _block_if_already_member(interaction: discord.Interaction) -> bool:
+    """If the user already has the gang's roster role, tell them so and return
+    True so the EOI form is never shown. Returns False if they can still apply
+    (including when no roster role is configured yet)."""
+    store = guild_store(DATA, interaction.guild_id)
+    role_id = store.get("roster_role_id")
+    member_roles = getattr(interaction.user, "roles", None)
+    if role_id and member_roles and any(getattr(r, "id", None) == role_id for r in member_roles):
+        await interaction.response.send_message(
+            "You're already in the gang, silly 😄 — no need to apply.",
+            ephemeral=True,
+        )
+        return True
+    return False
+
+
 class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest"):
     ign = discord.ui.Label(
         text="In-game name",
