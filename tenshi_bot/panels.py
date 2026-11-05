@@ -385,6 +385,14 @@ async def eoi_post(
         ),
         inline=False,
     )
+    embed.add_field(
+        name="⚠️ Heads up",
+        value=(
+            "• **No montage = instant deny** — put at least one in your application.\n"
+            "• Invite your mates and have them fill this out too."
+        ),
+        inline=False,
+    )
     _brand(embed, interaction.guild, "Applications are voted on by current members")
     await _send_card(interaction.channel, [embed], EOIPromptView)
     await interaction.response.send_message("EOI prompt posted. ✅", ephemeral=True)
