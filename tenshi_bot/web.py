@@ -966,18 +966,34 @@ async def _h_index(request):
     return _aioweb.Response(text=_PAGE_HTML, content_type="text/html")
 
 
+def _brand_info() -> dict:
+    """Primary server's name + icon, for branding the page (public info)."""
+    g = bot.guilds[0] if getattr(bot, "guilds", None) else None
+    icon = ""
+    if g is not None:
+        ic = getattr(g, "icon", None)
+        if ic is not None:
+            try:
+                icon = str(ic.url)
+            except Exception:
+                icon = ""
+    return {"name": g.name if g is not None else "Tenshi Admin", "icon": icon}
+
+
 async def _h_me(request):
+    brand = _brand_info()
     if not _configured():
-        return _aioweb.json_response({"authed": False, "reason": "not_configured"})
+        return _aioweb.json_response({"authed": False, "reason": "not_configured", "brand": brand})
     uid = _read_session(request.cookies.get(_COOKIE))
     if not uid:
-        return _aioweb.json_response({"authed": False, "reason": "login"})
+        return _aioweb.json_response({"authed": False, "reason": "login", "brand": brand})
     guilds = await _accessible_guilds(uid)
     if not guilds:
-        return _aioweb.json_response({"authed": False, "reason": "no_access"})
+        return _aioweb.json_response({"authed": False, "reason": "no_access", "brand": brand})
     return _aioweb.json_response(
         {
             "authed": True,
+            "brand": brand,
             "user": {"id": str(uid)},
             "guilds": [{"id": str(g.id), "name": g.name} for g in guilds],
         }
@@ -1471,7 +1487,7 @@ _PAGE_HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tenshi · Roster</title>
+<title>Tenshi Admin</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
@@ -1499,9 +1515,11 @@ _PAGE_HTML = """
   header{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;
     padding:16px 22px;border-bottom:1px solid var(--line);
     background:linear-gradient(180deg,rgba(7,7,10,.92),rgba(7,7,10,.72));backdrop-filter:blur(12px)}
-  .logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:18px;
+  .logo{width:36px;height:36px;border-radius:11px;display:grid;place-items:center;font-size:18px;overflow:hidden;
     background:linear-gradient(135deg,#2a0b16,#4c0f22);border:1px solid rgba(244,63,94,.4);
     box-shadow:0 0 22px rgba(225,29,72,.45)}
+  .logo.hasimg{background:#0d0d12}
+  .logo img{width:100%;height:100%;object-fit:cover;display:block}
   .brand{font-family:"Space Grotesk",sans-serif;font-size:19px;font-weight:700;letter-spacing:.5px;
     background:linear-gradient(90deg,#fff,#ffb3c1);-webkit-background-clip:text;background-clip:text;color:transparent;flex:1}
   .brand small{font-family:"Inter";font-weight:500;font-size:12px;color:var(--mute);letter-spacing:0;display:block;margin-top:-2px}
@@ -1523,15 +1541,51 @@ _PAGE_HTML = """
   input:focus,select:focus{border-color:rgba(244,63,94,.55);background:rgba(244,63,94,.06)}
   .muted{color:var(--mute)}
 
-  .gate{max-width:460px;margin:12vh auto;text-align:center;padding:40px 32px;border-radius:26px;
-    background:linear-gradient(180deg,rgba(32,20,27,.88),rgba(18,18,24,.82));border:1px solid var(--line);
-    backdrop-filter:blur(18px);box-shadow:0 30px 90px rgba(0,0,0,.6)}
-  .gate .gicon{width:76px;height:76px;margin:0 auto 20px;border-radius:22px;display:grid;place-items:center;font-size:38px;
-    background:linear-gradient(135deg,#2a0b16,#4c0f22);border:1px solid rgba(244,63,94,.45);box-shadow:0 0 40px rgba(225,29,72,.5)}
-  .gate h2{margin:0 0 8px;font-size:23px;font-weight:800}
-  .gate p{margin:0;color:var(--mute);line-height:1.6}
-  #gateActions{margin-top:24px}
-  #gateActions button{width:100%;padding:13px;font-size:15px}
+  /* ===== gate / login / no-access screens ===== */
+  #gate.gate{position:fixed;inset:0;z-index:40;display:grid;place-items:center;padding:24px;overflow:hidden;
+    background:radial-gradient(1200px 800px at 50% -10%, #28101a, #050508 72%)}
+  #gate.gate::before{content:"";position:absolute;inset:-30%;z-index:0;pointer-events:none;
+    background:
+      conic-gradient(from 0deg at 50% 50%, rgba(225,29,72,.22), rgba(130,20,90,.12), rgba(60,10,40,.20), rgba(225,29,72,.22));
+    filter:blur(40px);animation:aurora 16s linear infinite}
+  #gate.gate::after{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;opacity:.5;
+    background:
+      radial-gradient(420px 420px at 18% 22%, rgba(244,63,94,.28), transparent 60%),
+      radial-gradient(520px 520px at 84% 78%, rgba(120,20,80,.26), transparent 60%);
+    animation:orbfloat 9s ease-in-out infinite alternate}
+  @keyframes aurora{to{transform:rotate(360deg)}}
+  @keyframes orbfloat{to{transform:translate3d(0,-26px,0) scale(1.08)}}
+  .gatecard{position:relative;z-index:1;max-width:440px;width:100%;text-align:center;padding:44px 34px 36px;
+    border-radius:28px;background:linear-gradient(180deg,rgba(26,16,22,.86),rgba(12,12,17,.9));
+    border:1px solid rgba(255,255,255,.08);backdrop-filter:blur(22px) saturate(1.2);
+    box-shadow:0 40px 120px rgba(0,0,0,.7),0 0 0 1px rgba(244,63,94,.08) inset;
+    animation:gatepop .55s cubic-bezier(.2,.9,.25,1.3) both}
+  .gatecard::before{content:"";position:absolute;inset:-1px;border-radius:29px;padding:1px;pointer-events:none;
+    background:linear-gradient(135deg,rgba(244,63,94,.65),transparent 40%,transparent 60%,rgba(244,63,94,.5));
+    -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);
+    -webkit-mask-composite:xor;mask-composite:exclude;opacity:.8;animation:bordshift 6s ease-in-out infinite alternate}
+  @keyframes gatepop{from{opacity:0;transform:translateY(22px) scale(.94)}to{opacity:1;transform:none}}
+  @keyframes bordshift{to{filter:hue-rotate(-18deg)}}
+  .gate .gicon{position:relative;width:96px;height:96px;margin:0 auto 22px;border-radius:50%;display:grid;place-items:center;
+    font-size:44px;background:linear-gradient(135deg,#2a0b16,#4c0f22);
+    box-shadow:0 0 50px rgba(225,29,72,.55),0 10px 30px rgba(0,0,0,.5);animation:iconfloat 4.5s ease-in-out infinite}
+  .gate .gicon::before{content:"";position:absolute;inset:-7px;border-radius:50%;z-index:-1;
+    background:conic-gradient(from 0deg,#e11d48,#f43f5e,#be123c,#e11d48);filter:blur(7px);opacity:.85;
+    animation:ringspin 4s linear infinite}
+  .gate .gicon .glogo{width:100%;height:100%;border-radius:50%;object-fit:cover;display:block;
+    border:2px solid rgba(255,255,255,.12)}
+  .gate .gicon .gemoji{line-height:1}
+  .gate .gicon .gbadge{position:absolute;right:-4px;bottom:-4px;width:34px;height:34px;border-radius:50%;
+    display:grid;place-items:center;font-size:18px;background:#15151b;border:2px solid rgba(244,63,94,.5);
+    box-shadow:0 4px 14px rgba(0,0,0,.5)}
+  @keyframes iconfloat{50%{transform:translateY(-8px)}}
+  @keyframes ringspin{to{transform:rotate(360deg)}}
+  .gatecard h2{margin:0 0 10px;font-family:"Space Grotesk",sans-serif;font-size:27px;font-weight:800;letter-spacing:.3px;
+    background:linear-gradient(90deg,#fff,#ffb3c1);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .gatecard p{margin:0 auto;max-width:330px;color:var(--mute);line-height:1.65;font-size:14.5px}
+  #gateActions{margin-top:26px}
+  #gateActions button{width:100%;padding:14px;font-size:15px;border-radius:14px}
+  #gateActions a{display:block}
   .discordbtn{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:13px;
     background:#5865f2;border:1px solid #5865f2;border-radius:13px;color:#fff;font-weight:700;font-size:15px;cursor:pointer;
     box-shadow:0 12px 34px rgba(88,101,242,.45);transition:.16s}
@@ -1664,8 +1718,8 @@ _PAGE_HTML = """
 </head>
 <body>
 <header>
-  <div class="logo">🐉</div>
-  <div class="brand">TENSHI<small id="sub">Roster Manager</small></div>
+  <div class="logo" id="brandLogo">🐉</div>
+  <div class="brand">TENSHI ADMIN<small id="sub">Admin Panel</small></div>
   <a id="logoutBtn" href="/logout" style="display:none"><button class="ghost">Log out</button></a>
 </header>
 
@@ -1728,17 +1782,27 @@ async function api(path,opts){
   return d;
 }
 const DSVG='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="flex:none"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.2.5c1.7.4 3.1 1 4.3 1.6a13 13 0 0 0-11 0C9.6 4.4 11 3.9 12.6 3.5L12.4 3a19.8 19.8 0 0 0-5 1.4C4 8.3 3.2 12.1 3.5 15.8a19.9 19.9 0 0 0 6 3l.8-1.1c-.7-.3-1.4-.6-2-1l.5-.4a14.2 14.2 0 0 0 12 0l.5.4c-.6.4-1.3.7-2 1l.8 1.1a19.9 19.9 0 0 0 6-3c.4-4.3-.7-8.1-3.5-11.4ZM9.3 13.8c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm5.4 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg>';
+var BRAND={name:"Tenshi Admin",icon:""};
+function applyBrand(b){
+  if(!b)return; BRAND=b;
+  const hl=$("brandLogo");
+  if(hl){ hl.innerHTML=BRAND.icon?`<img src="${h(BRAND.icon)}" alt="">`:"🐉"; hl.classList.toggle("hasimg",!!BRAND.icon); }
+  try{document.title=(BRAND.name||"Tenshi")+" · Admin";}catch(e){}
+}
 function gate(icon,title,text,actions){
   show("app",false);show("gate",true);$("logoutBtn").style.display="none";
   if(window.__recheck){clearInterval(window.__recheck);window.__recheck=null;}
-  $("gate").innerHTML=`<div class="gicon">${icon}</div><h2>${h(title)}</h2><p class="muted">${h(text)}</p><div id="gateActions">${actions||""}</div>`;
+  const logo=BRAND.icon?`<img class="glogo" src="${h(BRAND.icon)}" alt="">`:`<span class="gemoji">${icon}</span>`;
+  const badge=BRAND.icon?`<span class="gbadge">${icon}</span>`:"";
+  $("gate").innerHTML=`<div class="gatecard"><div class="gicon">${logo}${badge}</div><h2>${h(title)}</h2><p class="muted">${h(text)}</p><div id="gateActions">${actions||""}</div></div>`;
 }
 async function boot(){
   let me;try{me=await api("/api/me");}catch(e){gate("⚠️","Can't connect","Couldn't reach the server — try again.","<button onclick='boot()'>Retry</button>");return;}
+  applyBrand(me.brand);
   if(!me.authed){
     if(me.reason==="not_configured") gate("⚙️","Setup needed","The owner still needs to set DISCORD_CLIENT_SECRET and a Website access role before anyone can log in.");
     else if(me.reason==="no_access") gate("🚫","No access","You don't have the website-access role yet. Ask leadership to give it to you, then reload this page.",'<a href="/logout"><button>Log out</button></a>');
-    else gate("🐉","Tenshi Roster","Log in with Discord to manage the roster, stash, KOS and more.",'<a href="/login"><button class="discordbtn">'+DSVG+' Log in with Discord</button></a>');
+    else gate("🐉","Tenshi Admin","Log in with Discord to manage the roster, stash, KOS, strikes and more.",'<a href="/login"><button class="discordbtn">'+DSVG+' Log in with Discord</button></a>');
     return;
   }
   show("gate",false);show("app",true);$("logoutBtn").style.display="";
