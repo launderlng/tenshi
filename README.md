@@ -115,12 +115,18 @@ A browser page, served by the bot itself, that mirrors a lot of the bot. It's
   individual role** (the ✕ on each role chip), **add a rank** (the `+ role`
   dropdown), or **Remove all** (strip every gang role at once). Roles above the
   bot show a 🔒 and can't be touched.
-- **KOS tab** — the KOS list with reasons, and **Take off KOS** (removes the KOS
-  role + list entry).
+- **KOS tab** — the KOS list with each entry's reason, who added it and when,
+  and **Take off KOS** (removes the KOS role + list entry).
+- **Strikes tab** — everyone who currently has strikes, worst first: a count
+  against the limit, a bar, and every strike's reason, who issued it and when.
+  Members with strikes also show a ⚠️ badge on the Roster tab. Read-only.
 - **Stash tab** — a gang inventory: add/±/remove items, and a **screenshot
   scanner** — drop a stash screenshot and it OCRs the item text (names +
-  quantities), shows you the candidates to confirm/edit, then adds them.
-- **Wars tab** — read-only list of active/past wars with live scores.
+  quantities), crops the item icon with its background cut out, shows you the
+  candidates to confirm/edit, then adds them.
+- **Wars tab** — active/past wars with live scores, win-rate bar, a recent
+  rounds strip (🟩🟥), when each war started, the first-to target and progress,
+  and the last round logged. Read-only.
 
 Every change applies to Discord live.
 

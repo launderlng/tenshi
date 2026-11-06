@@ -205,10 +205,53 @@ def _kos_members(guild: "discord.Guild", store: dict) -> list[dict]:
                 "id": str(uid),
                 "name": m.display_name if m is not None else (k.get("name") or str(uid)),
                 "avatar": str(m.display_avatar.url) if m is not None else "",
-                "reason": k.get("reason") or "",
+                # entries are stored with "note"; older ones used "reason"
+                "reason": k.get("note") or k.get("reason") or "",
+                "added_by": k.get("added_by") or "",
+                "at": k.get("at") or "",
             }
         )
     out.sort(key=lambda x: x["name"].lower())
+    return out
+
+
+def _strikes_list(guild: "discord.Guild", store: dict) -> list[dict]:
+    """Everyone who currently has strikes, worst first, with each strike's
+    reason / who issued it / when. Read-only mirror of `/strike list`."""
+    limit = int(store.get("strike_limit", 3) or 3)
+    by_user: dict[int, list] = {}
+    for s in store.get("strikes", []):
+        uid = s.get("user_id")
+        if not uid:
+            continue
+        by_user.setdefault(uid, []).append(s)
+    out = []
+    for uid, lst in by_user.items():
+        m = guild.get_member(uid)
+        lst = sorted(lst, key=lambda s: s.get("ts", 0), reverse=True)
+        entries = []
+        for s in lst:
+            giver = guild.get_member(s.get("by")) if s.get("by") else None
+            entries.append(
+                {
+                    "id": s.get("id"),
+                    "reason": s.get("reason") or "",
+                    "by": giver.display_name if giver is not None else (str(s.get("by")) if s.get("by") else ""),
+                    "ts": s.get("ts"),
+                }
+            )
+        out.append(
+            {
+                "id": str(uid),
+                "name": m.display_name if m is not None else str(uid),
+                "avatar": str(m.display_avatar.url) if m is not None else "",
+                "count": len(lst),
+                "limit": limit,
+                "over": len(lst) >= limit,
+                "strikes": entries,
+            }
+        )
+    out.sort(key=lambda x: (-x["count"], x["name"].lower()))
     return out
 
 
@@ -638,13 +681,24 @@ def _scan_stash(data: bytes) -> list[dict]:
 def _wars_list(store: dict) -> list[dict]:
     out = []
     for w in store.get("wars", []):
+        log = w.get("log", []) or []
+        wins, losses = int(w.get("wins", 0)), int(w.get("losses", 0))
+        total = wins + losses
+        last = log[-1] if log else None
         out.append(
             {
                 "enemy": w.get("enemy", "?"),
-                "wins": int(w.get("wins", 0)),
-                "losses": int(w.get("losses", 0)),
+                "wins": wins,
+                "losses": losses,
                 "active": bool(w.get("active", True)),
                 "first_to": w.get("first_to"),
+                "start": w.get("start"),
+                "rounds": total,
+                "winrate": round(100 * wins / total) if total else 0,
+                # last ~14 rounds, oldest→newest, 1=win 0=loss, for a 🟩🟥 strip
+                "recent": [1 if e.get("r") == "win" else 0 for e in log[-14:]],
+                "last_ts": last.get("ts") if last else None,
+                "last_by": (last.get("by_name") or "") if last else "",
             }
         )
     out.sort(key=lambda x: (not x["active"], -(x["wins"] + x["losses"])))
@@ -1164,6 +1218,19 @@ async def _h_wars(request):
     return _aioweb.json_response({"wars": _wars_list(store)})
 
 
+async def _h_strikes(request):
+    guild = _guild_from(request.query.get("guild"))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    return _aioweb.json_response(
+        {"members": _strikes_list(guild, store), "limit": int(store.get("strike_limit", 3) or 3)}
+    )
+
+
 async def _h_eois(request):
     guild = _guild_from(request.query.get("guild"))
     if guild is None:
@@ -1256,6 +1323,7 @@ async def start_web_server() -> None:
             _aioweb.post("/api/stash_remove", _h_stash_remove),
             _aioweb.post("/api/stash_scan", _h_stash_scan),
             _aioweb.get("/api/wars", _h_wars),
+            _aioweb.get("/api/strikes", _h_strikes),
             _aioweb.get("/api/eois", _h_eois),
             _aioweb.post("/api/eoi_close", _h_eoi_close),
             _aioweb.post("/api/eoi_accept", _h_eoi_accept),
@@ -1389,6 +1457,28 @@ _PAGE_HTML = """
   .ranklabel .pill{margin-left:auto;background:rgba(255,255,255,.05);border:1px solid var(--line);
     border-radius:999px;padding:2px 10px;font-size:11px;color:var(--mute)}
 
+  /* strikes */
+  .sflag{display:inline-flex;align-items:center;gap:3px;font-size:10.5px;font-weight:700;padding:1px 7px;
+    border-radius:999px;margin-left:8px;vertical-align:middle;background:rgba(245,158,11,.14);
+    color:#fcd34d;border:1px solid rgba(245,158,11,.35)}
+  .sflag.over{background:rgba(239,68,68,.16);color:#fca5a5;border-color:rgba(239,68,68,.4)}
+  .scount{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;white-space:nowrap}
+  .sbar{display:flex;gap:3px;margin-top:6px}
+  .sbar i{width:17px;height:7px;border-radius:2px;background:rgba(255,255,255,.08)}
+  .sbar i.on{background:linear-gradient(90deg,#f59e0b,#ef4444)}
+  .slog{margin-top:9px;display:flex;flex-direction:column;gap:6px;border-top:1px solid var(--line);padding-top:9px}
+  .slog .row{font-size:12px;color:var(--mute);display:flex;gap:7px;align-items:baseline;flex-wrap:wrap}
+  .slog .row b{color:var(--text);font-weight:600}
+  .slog .sid{font-family:ui-monospace,monospace;opacity:.6;font-size:11px}
+  /* war extras */
+  .wmeta{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:5px;font-size:12px;color:var(--mute)}
+  .wrounds{display:flex;gap:3px;margin-top:9px;flex-wrap:wrap}
+  .wrounds i{width:13px;height:13px;border-radius:3px;background:rgba(255,255,255,.08)}
+  .wrounds i.w{background:#22c55e}
+  .wrounds i.l{background:#ef4444}
+  .wrate{height:6px;border-radius:999px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:9px;max-width:240px}
+  .wrate>span{display:block;height:100%;background:linear-gradient(90deg,#22c55e,#4ade80)}
+
   ul.members{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px}
   li.member{display:flex;align-items:center;gap:13px;background:var(--card);border:1px solid var(--line);
     border-radius:15px;padding:12px 14px;backdrop-filter:blur(8px);transition:.18s;animation:rise .4s both}
@@ -1484,6 +1574,7 @@ _PAGE_HTML = """
   <div class="tabs">
     <div class="tab active" data-tab="roster" onclick="setTab('roster')">👥 Roster</div>
     <div class="tab" data-tab="kos" onclick="setTab('kos')">💀 KOS</div>
+    <div class="tab" data-tab="strikes" onclick="setTab('strikes')">⚠️ Strikes</div>
     <div class="tab" data-tab="stash" onclick="setTab('stash')">📦 Stash</div>
     <div class="tab" data-tab="wars" onclick="setTab('wars')">⚔️ Wars</div>
     <div class="tab" data-tab="eois" onclick="setTab('eois')">📨 EOIs</div>
@@ -1497,6 +1588,7 @@ _PAGE_HTML = """
 
   <div id="rosterView"></div>
   <div id="kosView" style="display:none"></div>
+  <div id="strikesView" style="display:none"></div>
   <div id="stashView" style="display:none"></div>
   <div id="warsView" style="display:none"></div>
   <div id="eoisView" style="display:none"></div>
@@ -1547,10 +1639,10 @@ async function reload(){
   const sel=$("guildSel");if(sel&&sel.value)STATE.guild=sel.value;
   const g=encodeURIComponent(STATE.guild);
   try{
-    const [ov,ro,ko,stn,wa,eo]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g),api("/api/stash?guild="+g),api("/api/wars?guild="+g),api("/api/eois?guild="+g)]);
+    const [ov,ro,ko,stn,wa,eo,sk]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g),api("/api/stash?guild="+g),api("/api/wars?guild="+g),api("/api/eois?guild="+g),api("/api/strikes?guild="+g)]);
     $("sub").textContent=ro.guild?.name||"Roster";
     renderStats(ov.overview);
-    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];STATE.stash=stn.items||[];STATE.stashTotal=stn.total||0;STATE.wars=wa.wars||[];STATE.eois=eo.eois||[];
+    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];STATE.stash=stn.items||[];STATE.stashTotal=stn.total||0;STATE.wars=wa.wars||[];STATE.eois=eo.eois||[];STATE.strikes=sk.members||[];STATE.strikeLimit=sk.limit||3;
     render();
   }catch(e){ if(e.status===401||e.status===403) return boot(); toast(e.message||"Failed to load.","err"); }
 }
@@ -1568,10 +1660,10 @@ function renderStats(o){
 }
 function setTab(t){
   TAB=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===t));
-  ["roster","kos","stash","wars","eois"].forEach(v=>show(v+"View",t===v));
-  $("search").placeholder={roster:"Search members…",kos:"Search KOS…",stash:"Search items…",wars:"Wars",eois:"Pending applications"}[t]||"Search…";render();
+  ["roster","kos","strikes","stash","wars","eois"].forEach(v=>show(v+"View",t===v));
+  $("search").placeholder={roster:"Search members…",kos:"Search KOS…",strikes:"Search struck members…",stash:"Search items…",wars:"Search wars…",eois:"Pending applications"}[t]||"Search…";render();
 }
-function render(){({roster:renderRoster,kos:renderKos,stash:renderStash,wars:renderWars,eois:renderEois}[TAB]||renderRoster)();}
+function render(){({roster:renderRoster,kos:renderKos,strikes:renderStrikes,stash:renderStash,wars:renderWars,eois:renderEois}[TAB]||renderRoster)();}
 function renderRoster(){
   const q=$("search").value.toLowerCase();
   let ms=STATE.members.filter(m=>m.name.toLowerCase().includes(q)||(m.rank||"").toLowerCase().includes(q));
@@ -1596,19 +1688,45 @@ function memberRow(m){
   const have=new Set((m.roles||[]).map(r=>r.name));
   const addable=STATE.ranks.filter(x=>!have.has(x.name));
   const addsel=addable.length?`<select class="addsel" onchange="addRole('${h(m.id)}',this.value,this);this.value=''"><option value="">+ role</option>${addable.map(x=>`<option value="${h(x.id)}">${h(x.name)}</option>`).join("")}</select>`:"";
+  const s=(STATE.strikes||[]).find(x=>x.id===m.id);
+  const flag=s?` <span class="sflag${s.over?' over':''}" title="${s.count}/${s.limit} strikes — see the Strikes tab">⚠️ ${s.count}/${s.limit}</span>`:"";
   return `<li class="member" data-id="${h(m.id)}"><div class="av"><img src="${h(m.avatar)}" alt="" loading="lazy"></div>
-    <div class="grow"><div class="mname">${h(m.name)}</div><div class="chips">${chips||'<span class="chip locked">no gang roles</span>'}${addsel}</div></div>
+    <div class="grow"><div class="mname">${h(m.name)}${flag}</div><div class="chips">${chips||'<span class="chip locked">no gang roles</span>'}${addsel}</div></div>
     <button class="danger" onclick="removeMember('${h(m.id)}','${h(m.name)}')">Remove all</button></li>`;
 }
+function ago(ts){if(!ts)return"";const s=Math.floor(Date.now()/1000)-Number(ts);if(s<0)return"just now";
+  if(s<3600)return Math.max(Math.round(s/60),1)+"m ago";if(s<86400)return Math.round(s/3600)+"h ago";
+  if(s<2592000)return Math.round(s/86400)+"d ago";return Math.round(s/2592000)+"mo ago";}
 function renderKos(){
   const q=$("search").value.toLowerCase();
   const ks=STATE.kos.filter(k=>k.name.toLowerCase().includes(q));
   $("count").textContent=STATE.kos.length+" on KOS";
   if(!ks.length){$("kosView").innerHTML='<div class="empty">Nobody on the KOS list. 🕊️</div>';return;}
-  $("kosView").innerHTML=`<ul class="members">${ks.map(k=>`<li class="member" data-id="${h(k.id)}">
+  $("kosView").innerHTML=`<ul class="members">${ks.map(k=>{
+    const meta=[k.added_by?"added by "+h(k.added_by):"",k.at?h(k.at):""].filter(Boolean).join(" · ");
+    return `<li class="member" data-id="${h(k.id)}">
     ${k.avatar?`<div class="av"><img src="${h(k.avatar)}" alt="" loading="lazy"></div>`:'<div class="av skull">💀</div>'}
-    <div class="grow"><div class="mname">${h(k.name)}</div>${k.reason?`<div class="reason">${h(k.reason)}</div>`:""}</div>
-    <button class="danger" onclick="removeKos('${h(k.id)}','${h(k.name)}')">Take off KOS</button></li>`).join("")}</ul>`;
+    <div class="grow"><div class="mname">${h(k.name)}</div>${k.reason?`<div class="reason">${h(k.reason)}</div>`:'<div class="reason" style="opacity:.6">no reason given</div>'}${meta?`<div class="muted" style="font-size:11px;margin-top:3px">${meta}</div>`:""}</div>
+    <button class="danger" onclick="removeKos('${h(k.id)}','${h(k.name)}')">Take off KOS</button></li>`;}).join("")}</ul>`;
+}
+function renderStrikes(){
+  const q=$("search").value.toLowerCase();
+  const ms=(STATE.strikes||[]).filter(m=>m.name.toLowerCase().includes(q));
+  const total=(STATE.strikes||[]).reduce((a,m)=>a+m.count,0);
+  $("count").textContent=(STATE.strikes||[]).length+" struck · "+total+" strike"+(total===1?"":"s");
+  if(!ms.length){$("strikesView").innerHTML='<div class="empty">Nobody has strikes. ✨</div>';return;}
+  $("strikesView").innerHTML=`<ul class="members" style="gap:10px">`+ms.map(m=>{
+    const lim=m.limit||STATE.strikeLimit||3;
+    const bar=Array.from({length:Math.max(lim,m.count)},(_,i)=>`<i class="${i<m.count?'on':''}"></i>`).join("");
+    const col=m.over?"var(--bad)":"var(--warn)";
+    const log=(m.strikes||[]).map(s=>`<div class="row"><b>${h(s.reason||"—")}</b><span>${s.by?"by "+h(s.by):""}</span><span>${s.ts?ago(s.ts):""}</span>${s.id!=null?`<span class="sid">#${h(String(s.id))}</span>`:""}</div>`).join("");
+    return `<li class="member" style="align-items:flex-start">
+      ${m.avatar?`<div class="av"><img src="${h(m.avatar)}" alt="" loading="lazy"></div>`:'<div class="av skull" style="background:linear-gradient(135deg,#5a3a0f,#5c3b12)">⚠️</div>'}
+      <div class="grow"><div class="mname">${h(m.name)}${m.over?` <span class="sflag over" title="at or over the limit">limit reached</span>`:""}</div>
+        <div class="sbar">${bar}</div>
+        <div class="slog">${log}</div></div>
+      <div class="scount" style="color:${col}">${m.count}<span style="font-size:13px;color:var(--mute)">/${lim}</span></div></li>`;
+  }).join("")+`</ul>`;
 }
 async function post(path,body){return api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
 async function removeRole(uid,rid,name){
@@ -1675,11 +1793,30 @@ async function stashDelta(item,d){try{await post("/api/stash",{guild:STATE.guild
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
 async function stashRemove(item){try{await post("/api/stash_remove",{guild:STATE.guild,item});toast("Removed "+item,"ok");await reload();}
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
-function renderWars(){const ws=STATE.wars||[];$("count").textContent=ws.length+" war"+(ws.length===1?"":"s");
+function renderWars(){
+  const q=$("search").value.toLowerCase();
+  const ws=(STATE.wars||[]).filter(w=>(w.enemy||"").toLowerCase().includes(q));
+  const all=STATE.wars||[];const liveN=all.filter(w=>w.active).length;
+  $("count").textContent=all.length+" war"+(all.length===1?"":"s")+(liveN?" · "+liveN+" live":"");
   if(!ws.length){$("warsView").innerHTML=`<div class="empty">No wars tracked.</div>`;return;}
-  $("warsView").innerHTML=`<ul class="members" style="gap:9px">`+ws.map(w=>{
+  $("warsView").innerHTML=`<ul class="members" style="gap:10px">`+ws.map(w=>{
     const col=w.wins>w.losses?"var(--ok)":w.losses>w.wins?"var(--bad)":"var(--mute)";
-    return `<li class="warcard"><div class="grow"><div class="mname">vs ${h(w.enemy)}</div><div class="muted" style="font-size:12px">${w.active?"In progress":"Ended"}${w.first_to?" · first to "+w.first_to:""}</div></div><span class="badge ${w.active?'live':'done'}">${w.active?'Live':'Done'}</span><div class="score" style="color:${col}">${w.wins} – ${w.losses}</div></li>`;}).join("")+`</ul>`;}
+    const rounds=(w.recent||[]).map(r=>`<i class="${r?'w':'l'}"></i>`).join("");
+    const meta=[
+      w.start?"started "+ago(w.start):"",
+      (w.rounds||0)+" round"+(w.rounds===1?"":"s"),
+      (w.rounds>0?w.winrate+"% win rate":""),
+      w.first_to?`first to ${w.first_to} (${Math.max(w.wins,w.losses)}/${w.first_to})`:"",
+      w.last_ts?`last round ${ago(w.last_ts)}${w.last_by?" by "+h(w.last_by):""}`:"",
+    ].filter(Boolean).map(x=>`<span>${x}</span>`).join("");
+    return `<li class="warcard" style="align-items:flex-start;flex-wrap:wrap">
+      <div class="grow"><div class="mname">vs ${h(w.enemy)}</div>
+        <div class="wmeta">${meta}</div>
+        ${w.rounds>0?`<div class="wrate"><span style="width:${w.winrate}%"></span></div>`:""}
+        ${rounds?`<div class="wrounds" title="recent rounds (oldest → newest)">${rounds}</div>`:""}</div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:7px">
+        <span class="badge ${w.active?'live':'done'}">${w.active?'Live':'Done'}</span>
+        <div class="score" style="color:${col}">${w.wins} – ${w.losses}</div></div></li>`;}).join("")+`</ul>`;}
 function renderEois(){const es=STATE.eois||[];$("count").textContent=es.length+" pending";
   if(!es.length){$("eoisView").innerHTML=`<div class="empty">No pending applications. 🎉</div>`;return;}
   $("eoisView").innerHTML=`<ul class="members" style="gap:9px">`+es.map(e=>`<li class="member">${e.avatar?`<div class="av"><img src="${h(e.avatar)}" alt=""></div>`:`<div class="av skull" style="background:linear-gradient(135deg,#1a2033,#243154)">📨</div>`}<div class="grow"><div class="mname">${h(e.ign||e.applicant||"Applicant")}</div><div class="muted" style="font-size:12px">${h(e.role||"—")}${e.applicant&&e.applicant!==e.ign?" · "+h(e.applicant):""}</div></div><div style="display:flex;gap:7px;align-items:center">${e.ends?`<span class="badge done" data-ts="${e.ends}"></span>`:""}<span class="badge" style="background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)">✅ ${e.yes}</span><span class="badge" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.4)">❌ ${e.no}</span><button style="padding:6px 11px;background:linear-gradient(135deg,#16a34a,#15803d);border:none;color:#fff;font-weight:700;border-radius:11px;cursor:pointer" onclick="acceptEoi('${h(e.id)}','${h(e.ign||e.applicant||"this")}')">Accept</button><button class="danger" style="padding:6px 11px" onclick="closeEoi('${h(e.id)}','${h(e.ign||e.applicant||"this")}')">Close</button></div></li>`).join("")+`</ul>`;
