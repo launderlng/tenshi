@@ -687,101 +687,154 @@ _PAGE_HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Tenshi · Roster Manager</title>
+<title>Tenshi · Roster</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@700&display=swap" rel="stylesheet">
 <style>
   :root{
-    --bg:#0a0a0c; --card:#141419; --card2:#1a1a20; --line:#272730; --text:#ececf1; --mute:#9a9aa6;
-    --brand:#e11d48; --ok:#22c55e; --bad:#dc2626; --warn:#f59e0b; --blue:#3b82f6; --radius:16px;
+    --bg:#07070a; --card:rgba(20,20,26,.72); --cardsolid:#15151b; --line:rgba(255,255,255,.07);
+    --text:#f2f2f6; --mute:#9a9aa8; --brand:#e11d48; --brand2:#f43f5e;
+    --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --blue:#60a5fa; --purple:#a78bfa; --r:18px;
   }
   *{box-sizing:border-box}
   html,body{margin:0}
-  body{background:radial-gradient(1200px 600px at 50% -10%,#1b0e14 0%,var(--bg) 55%);color:var(--text);
-    font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
+  body{background:var(--bg);color:var(--text);min-height:100vh;
+    font-family:"Inter",-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  body::before{content:"";position:fixed;inset:-20%;z-index:-1;pointer-events:none;
+    background:
+      radial-gradient(900px 520px at 12% -8%, rgba(225,29,72,.22), transparent 60%),
+      radial-gradient(760px 520px at 102% 2%, rgba(130,20,70,.20), transparent 55%),
+      radial-gradient(640px 640px at 50% 118%, rgba(60,10,36,.28), transparent 62%);
+    animation:drift 20s ease-in-out infinite alternate}
+  @keyframes drift{to{transform:translate3d(0,-14px,0) scale(1.04)}}
   a{text-decoration:none;color:inherit}
-  header{padding:18px 20px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:12px;
-    position:sticky;top:0;background:rgba(10,10,12,.86);backdrop-filter:blur(10px);z-index:9}
-  header .dot{width:10px;height:10px;border-radius:50%;background:var(--brand);box-shadow:0 0 16px var(--brand)}
-  header h1{font-size:17px;margin:0;font-weight:700;letter-spacing:.3px;flex:1}
-  .wrap{max-width:860px;margin:0 auto;padding:18px}
-  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  input,select,button{font:inherit}
-  input[type=text],select{background:var(--card);border:1px solid var(--line);color:var(--text);
-    padding:10px 12px;border-radius:10px;outline:none}
-  input:focus,select:focus{border-color:var(--brand)}
-  button{cursor:pointer;border:1px solid var(--line);background:var(--card);color:var(--text);
-    padding:9px 13px;border-radius:10px;transition:.15s}
-  button:hover{border-color:var(--brand)}
-  button:disabled{opacity:.5;cursor:default}
-  button.brand{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
-  button.ghost{background:transparent}
-  button.danger{background:transparent;border-color:#3a2126;color:#ff6b6b}
-  button.danger:hover{background:var(--bad);border-color:var(--bad);color:#fff}
-  .muted{color:var(--mute)}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius)}
-  .gate{max-width:440px;margin:12vh auto;text-align:center;padding:26px}
-  #gateActions{margin-top:16px}
+  ::selection{background:rgba(225,29,72,.35)}
 
-  /* stat strip */
-  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:10px;margin:2px 0 18px}
-  .stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px 14px}
-  .stat .n{font-size:22px;font-weight:800;letter-spacing:.5px}
-  .stat .l{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.6px;margin-top:2px}
-  .stat.brand .n{color:var(--brand)} .stat.bad .n{color:#ff6b6b} .stat.warn .n{color:var(--warn)}
-  .stat.ok .n{color:var(--ok)} .stat.blue .n{color:var(--blue)}
+  header{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:14px;
+    padding:16px 22px;border-bottom:1px solid var(--line);
+    background:linear-gradient(180deg,rgba(7,7,10,.92),rgba(7,7,10,.72));backdrop-filter:blur(12px)}
+  .logo{width:34px;height:34px;border-radius:10px;display:grid;place-items:center;font-size:18px;
+    background:linear-gradient(135deg,#2a0b16,#4c0f22);border:1px solid rgba(244,63,94,.4);
+    box-shadow:0 0 22px rgba(225,29,72,.45)}
+  .brand{font-family:"Space Grotesk",sans-serif;font-size:19px;font-weight:700;letter-spacing:.5px;
+    background:linear-gradient(90deg,#fff,#ffb3c1);-webkit-background-clip:text;background-clip:text;color:transparent;flex:1}
+  .brand small{font-family:"Inter";font-weight:500;font-size:12px;color:var(--mute);letter-spacing:0;display:block;margin-top:-2px}
+
+  .wrap{max-width:900px;margin:0 auto;padding:20px 18px 60px}
+  button{font:inherit;cursor:pointer;border:1px solid var(--line);background:rgba(255,255,255,.04);
+    color:var(--text);padding:9px 14px;border-radius:11px;transition:.16s ease}
+  button:hover{border-color:rgba(244,63,94,.55);background:rgba(244,63,94,.1);transform:translateY(-1px)}
+  button:active{transform:translateY(0)}
+  button:disabled{opacity:.5;cursor:default;transform:none}
+  button.brand-btn{background:linear-gradient(135deg,var(--brand),#be123c);border-color:transparent;
+    color:#fff;font-weight:700;box-shadow:0 8px 24px rgba(225,29,72,.35)}
+  button.ghost{background:transparent}
+  button.danger{border-color:rgba(239,68,68,.3);color:#ffb0b0;background:transparent}
+  button.danger:hover{background:var(--bad);border-color:var(--bad);color:#fff}
+  input[type=text],select{font:inherit;background:rgba(255,255,255,.04);border:1px solid var(--line);
+    color:var(--text);padding:11px 14px;border-radius:12px;outline:none;transition:.16s}
+  input:focus,select:focus{border-color:rgba(244,63,94,.55);background:rgba(244,63,94,.06)}
+  .muted{color:var(--mute)}
+
+  .gate{max-width:440px;margin:14vh auto;text-align:center;padding:30px 26px;border-radius:22px;
+    background:var(--card);border:1px solid var(--line);backdrop-filter:blur(14px);box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .gate .logo{margin:0 auto 14px;width:52px;height:52px;font-size:26px;border-radius:16px}
+  .gate h2{margin:0 0 6px;font-size:20px} .gate p{margin:0;color:var(--mute)}
+  #gateActions{margin-top:20px}
+
+  /* stat tiles */
+  .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px;margin:4px 0 20px}
+  .stat{position:relative;overflow:hidden;background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:14px 16px;backdrop-filter:blur(10px);transition:.2s;animation:rise .5s both}
+  .stat:hover{transform:translateY(-3px);border-color:rgba(244,63,94,.4)}
+  .stat .n{font-size:26px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+  .stat .l{font-size:11px;color:var(--mute);text-transform:uppercase;letter-spacing:.7px;margin-top:6px;font-weight:600}
+  .stat .ic{position:absolute;right:10px;top:9px;font-size:16px;opacity:.5}
+  .stat::after{content:"";position:absolute;left:0;right:0;bottom:0;height:3px;background:var(--brand);opacity:.8}
+  .stat.brand .n{color:#ff7a93} .stat.brand::after{background:var(--brand)}
+  .stat.bad .n{color:#ff8a8a} .stat.bad::after{background:var(--bad)}
+  .stat.warn .n{color:#ffcf6b} .stat.warn::after{background:var(--warn)}
+  .stat.ok .n{color:#86efac} .stat.ok::after{background:var(--ok)}
+  .stat.blue .n{color:#93c5fd} .stat.blue::after{background:var(--blue)}
+  .stat.purple .n{color:#c4b5fd} .stat.purple::after{background:var(--purple)}
+  @keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
 
   /* tabs */
-  .tabs{display:flex;gap:6px;margin-bottom:14px}
-  .tab{padding:8px 16px;border-radius:999px;border:1px solid var(--line);background:var(--card);cursor:pointer}
-  .tab.active{background:var(--brand);border-color:var(--brand);color:#fff;font-weight:600}
+  .tabs{display:inline-flex;gap:4px;padding:4px;border-radius:14px;background:rgba(255,255,255,.04);
+    border:1px solid var(--line);margin-bottom:16px}
+  .tab{padding:8px 18px;border-radius:10px;cursor:pointer;color:var(--mute);font-weight:600;transition:.18s}
+  .tab.active{background:linear-gradient(135deg,var(--brand),#be123c);color:#fff;box-shadow:0 6px 18px rgba(225,29,72,.4)}
 
-  .toolbar{display:flex;gap:10px;margin:2px 0 14px;align-items:center}
+  .toolbar{display:flex;gap:10px;margin-bottom:16px;align-items:center}
   .toolbar input{flex:1}
   .count{font-size:13px;color:var(--mute);margin-left:auto;white-space:nowrap}
 
-  .ranklabel{display:flex;align-items:center;gap:8px;margin:18px 2px 8px;font-weight:700;font-size:13px;
-    text-transform:uppercase;letter-spacing:.7px;color:var(--mute)}
-  .ranklabel .pill{background:var(--card2);border:1px solid var(--line);border-radius:999px;padding:1px 8px;font-size:11px}
+  .ranklabel{display:flex;align-items:center;gap:10px;margin:22px 2px 10px;font-weight:700;font-size:12px;
+    text-transform:uppercase;letter-spacing:1px;color:#ffb3c1}
+  .ranklabel::before{content:"";width:3px;height:15px;border-radius:3px;background:linear-gradient(var(--brand),#be123c)}
+  .ranklabel .pill{margin-left:auto;background:rgba(255,255,255,.05);border:1px solid var(--line);
+    border-radius:999px;padding:2px 10px;font-size:11px;color:var(--mute)}
 
-  ul.members{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
-  li.member{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);
-    border-radius:14px;padding:11px 13px}
-  li.member img{width:42px;height:42px;border-radius:50%;flex:none;background:#000;object-fit:cover}
-  .mname{font-weight:600}
+  ul.members{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:9px}
+  li.member{display:flex;align-items:center;gap:13px;background:var(--card);border:1px solid var(--line);
+    border-radius:15px;padding:12px 14px;backdrop-filter:blur(8px);transition:.18s;animation:rise .4s both}
+  li.member:hover{border-color:rgba(244,63,94,.35);background:rgba(255,255,255,.04)}
+  li.member .av{width:44px;height:44px;border-radius:50%;flex:none;padding:2px;
+    background:linear-gradient(135deg,var(--brand),#7c1d3a)}
+  li.member .av img{width:100%;height:100%;border-radius:50%;object-fit:cover;background:#000;display:block}
+  li.member .av.skull{display:grid;place-items:center;font-size:20px;background:linear-gradient(135deg,#3a0f0f,#5c1212)}
+  .mname{font-weight:700;font-size:15px}
   .grow{flex:1;min-width:0}
-  .chips{display:flex;gap:5px;flex-wrap:wrap;margin-top:4px;align-items:center}
-  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11px;padding:3px 9px;border-radius:999px;
-    background:#201a1c;border:1px solid #352027;color:#ffb3c0}
-  .chip.rankrole{background:#161f33;border-color:#243154;color:#9db4ff}
-  .chip .x{cursor:pointer;opacity:.7;font-weight:700;margin-left:1px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin-top:5px;align-items:center}
+  .chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:600;padding:3px 10px;border-radius:999px;
+    background:rgba(225,29,72,.12);border:1px solid rgba(244,63,94,.28);color:#ffb3c1;transition:.15s}
+  .chip.rankrole{background:rgba(96,165,250,.12);border-color:rgba(96,165,250,.3);color:#bcd4ff}
+  .chip .x{cursor:pointer;opacity:0;width:0;overflow:hidden;transition:.15s;font-weight:800}
+  li.member:hover .chip .x{opacity:.75;width:11px;margin-left:1px}
   .chip .x:hover{opacity:1;color:#fff}
   .chip.locked{opacity:.55}
-  .addsel{background:var(--card2);border:1px dashed var(--line);color:var(--mute);border-radius:999px;
-    padding:3px 8px;font-size:11px}
-  .rowactions{display:flex;gap:7px;flex:none;align-items:center}
-
+  .addsel{background:rgba(255,255,255,.03);border:1px dashed var(--line);color:var(--mute);
+    border-radius:999px;padding:3px 10px;font-size:11px;cursor:pointer}
   .reason{font-size:12px;color:var(--mute);margin-top:3px}
-  .msg{padding:11px 13px;border-radius:10px;margin:10px 0;display:none}
-  .msg.ok{background:#102a18;border:1px solid #1e5531;color:#86efac;display:block}
-  .msg.err{background:#2a1212;border:1px solid #551e1e;color:#fca5a5;display:block}
-  .empty{text-align:center;color:var(--mute);padding:40px 0}
-  footer{color:var(--mute);font-size:12px;text-align:center;padding:26px}
+
+  .empty{text-align:center;color:var(--mute);padding:46px 0}
+  .spinner{width:26px;height:26px;border-radius:50%;border:3px solid rgba(255,255,255,.12);
+    border-top-color:var(--brand);animation:spin .7s linear infinite;margin:40px auto}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* toasts */
+  #toasts{position:fixed;top:14px;right:14px;z-index:60;display:flex;flex-direction:column;gap:8px;max-width:360px}
+  .toast{padding:12px 15px;border-radius:13px;font-size:14px;font-weight:500;color:#fff;
+    background:rgba(20,20,26,.92);border:1px solid var(--line);backdrop-filter:blur(10px);
+    box-shadow:0 10px 30px rgba(0,0,0,.5);animation:toastin .25s ease}
+  .toast.ok{border-color:rgba(34,197,94,.45);background:rgba(16,40,24,.92)}
+  .toast.err{border-color:rgba(239,68,68,.5);background:rgba(42,16,16,.92)}
+  @keyframes toastin{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
+  @media(max-width:560px){#toasts{left:14px;right:14px;max-width:none}}
+  footer{color:var(--mute);font-size:12px;text-align:center;padding:30px 18px}
 </style>
 </head>
 <body>
 <header>
-  <span class="dot"></span><h1 id="title">Tenshi · Roster Manager</h1>
+  <div class="logo">🐉</div>
+  <div class="brand">TENSHI<small id="sub">Roster Manager</small></div>
   <a id="logoutBtn" href="/logout" style="display:none"><button class="ghost">Log out</button></a>
 </header>
 
-<div id="gate" class="gate card" style="display:none">
-  <h2 id="gateTitle">🔒 Sign in</h2>
+<div id="toasts"></div>
+
+<div id="gate" class="gate" style="display:none">
+  <div class="logo">🐉</div>
+  <h2 id="gateTitle">Sign in</h2>
   <p id="gateText" class="muted">Log in with Discord to manage the roster.</p>
   <div id="gateActions"></div>
 </div>
 
 <div id="app" class="wrap" style="display:none">
-  <div id="guildRow" class="row" style="margin-bottom:14px;display:none">
-    <label class="muted" for="guildSel">Server</label>
+  <div id="guildRow" style="margin-bottom:14px;display:none">
+    <label class="muted" for="guildSel" style="margin-right:8px">Server</label>
     <select id="guildSel" onchange="reload()"></select>
   </div>
 
@@ -793,28 +846,29 @@ _PAGE_HTML = """
   </div>
 
   <div class="toolbar">
-    <input id="search" type="text" placeholder="Search…" oninput="render()">
+    <input id="search" type="text" placeholder="Search members…" oninput="render()">
     <button onclick="reload()">↻ Refresh</button>
     <span id="count" class="count"></span>
   </div>
 
-  <div id="msg" class="msg"></div>
   <div id="rosterView"></div>
   <div id="kosView" style="display:none"></div>
 </div>
 
-<footer>Only people with the website-access role can open this. Changes here apply to Discord live. Tenshi · Logic</footer>
+<footer>Only people with the website-access role can open this · changes apply to Discord live · 天使</footer>
 
 <script>
 let STATE={members:[],ranks:[],kos:[],guild:""},TAB="roster";
 const $=id=>document.getElementById(id);
 function h(s){return (s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
 function show(id,on){$(id).style.display=on?"":"none";}
-function msg(t,k){const m=$("msg");if(!t){m.style.display="none";return;}m.className="msg "+k;m.textContent=t;}
-
+function toast(text,kind){
+  const t=document.createElement("div");t.className="toast "+(kind||"");t.textContent=text;
+  $("toasts").appendChild(t);
+  setTimeout(()=>{t.style.transition="opacity .3s";t.style.opacity="0";setTimeout(()=>t.remove(),300);},3800);
+}
 async function api(path,opts){
-  opts=opts||{};
-  const r=await fetch(path,opts);
+  const r=await fetch(path,opts||{});
   let d={};try{d=await r.json();}catch(e){}
   if(!r.ok) throw Object.assign(new Error(d.error||("HTTP "+r.status)),{status:r.status});
   return d;
@@ -823,14 +877,12 @@ function gate(title,text,actions){
   show("app",false);show("gate",true);$("logoutBtn").style.display="none";
   $("gateTitle").textContent=title;$("gateText").textContent=text;$("gateActions").innerHTML=actions||"";
 }
-
 async function boot(){
-  let me;
-  try{me=await api("/api/me");}catch(e){gate("⚠️ Error","Couldn't reach the server. Try again.");return;}
+  let me;try{me=await api("/api/me");}catch(e){gate("Error","Couldn't reach the server. Try again.");return;}
   if(!me.authed){
-    if(me.reason==="not_configured") gate("⚙️ Not set up","The owner still needs to set DISCORD_CLIENT_SECRET and a Website access role.");
-    else if(me.reason==="no_access") gate("🚫 No access","Your account doesn't have the website-access role. Ask leadership for it.",'<a href="/logout"><button>Log out</button></a>');
-    else gate("🔒 Sign in","Log in with Discord to manage the roster.",'<a href="/login"><button class="brand" style="width:100%">Log in with Discord</button></a>');
+    if(me.reason==="not_configured") gate("Not set up","The owner still needs to set DISCORD_CLIENT_SECRET and a Website access role.");
+    else if(me.reason==="no_access") gate("No access","Your account doesn't have the website-access role. Ask leadership for it.",'<a href="/logout"><button>Log out</button></a>');
+    else gate("Sign in","Log in with Discord to manage the roster.",'<a href="/login"><button class="brand-btn" style="width:100%;padding:12px">Log in with Discord</button></a>');
     return;
   }
   show("gate",false);show("app",true);$("logoutBtn").style.display="";
@@ -840,120 +892,89 @@ async function boot(){
   STATE.guild=me.guilds.length?me.guilds[0].id:"";
   await reload();
 }
-
 async function reload(){
   const sel=$("guildSel");if(sel&&sel.value)STATE.guild=sel.value;
-  msg("");
   const g=encodeURIComponent(STATE.guild);
   try{
-    const [ov,ro,ko]=await Promise.all([
-      api("/api/overview?guild="+g), api("/api/roster?guild="+g), api("/api/kos?guild="+g)
-    ]);
-    $("title").textContent="Tenshi · "+(ro.guild?.name||"Roster");
+    const [ov,ro,ko]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g)]);
+    $("sub").textContent=ro.guild?.name||"Roster";
     renderStats(ov.overview);
-    STATE.members=ro.members||[]; STATE.ranks=ro.ranks||[]; STATE.kos=ko.members||[];
+    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];
     render();
-  }catch(e){
-    if(e.status===401||e.status===403) return boot();
-    msg(e.message||"Failed to load.","err");
-  }
+  }catch(e){ if(e.status===401||e.status===403) return boot(); toast(e.message||"Failed to load.","err"); }
 }
-
+function countUp(el,to){
+  to=Number(to); if(isNaN(to)){el.textContent=arguments[1];return;}
+  const dur=600,t0=performance.now();
+  (function step(t){const p=Math.min((t-t0)/dur,1);el.textContent=Math.round(to*(1-Math.pow(1-p,3)));if(p<1)requestAnimationFrame(step);})(t0);
+}
 function renderStats(o){
-  const tiles=[
-    ["ranked","Ranked","brand"],["kos","On KOS","bad"],["open_eois","Open EOIs","warn"],
-    ["strikes_30d","Strikes 30d","warn"],["wars","Wars","blue"],["members","In server","ok"]
-  ];
-  $("stats").innerHTML=tiles.map(([k,l,c])=>`<div class="stat ${c}"><div class="n">${h(String(o[k]??"—"))}</div><div class="l">${l}</div></div>`).join("")
-    +`<div class="stat"><div class="n" style="font-size:16px">📻 ${h(o.radio||"—")}</div><div class="l">Radio</div></div>`;
+  const tiles=[["ranked","Ranked","🎯","brand"],["kos","On KOS","💀","bad"],["open_eois","Open EOIs","📨","warn"],
+    ["strikes_30d","Strikes 30d","⚠️","warn"],["wars","Wars","⚔️","blue"],["members","In server","👥","ok"]];
+  $("stats").innerHTML=tiles.map(([k,l,ic,c],i)=>`<div class="stat ${c}" style="animation-delay:${i*45}ms"><span class="ic">${ic}</span><div class="n" data-c="${h(String(o[k]??'—'))}">0</div><div class="l">${l}</div></div>`).join("")
+    +`<div class="stat purple" style="animation-delay:270ms"><span class="ic">📻</span><div class="n" style="font-size:17px">${h(o.radio||'—')}</div><div class="l">Radio</div></div>`;
+  document.querySelectorAll('.stat .n[data-c]').forEach(e=>countUp(e,e.dataset.c));
 }
-
 function setTab(t){
-  TAB=t;
-  document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===t));
+  TAB=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===t));
   show("rosterView",t==="roster");show("kosView",t==="kos");
-  $("search").placeholder = t==="roster" ? "Search members…" : "Search KOS…";
-  render();
+  $("search").placeholder=t==="roster"?"Search members…":"Search KOS…";render();
 }
-
-function render(){ TAB==="roster"?renderRoster():renderKos(); }
-
+function render(){TAB==="roster"?renderRoster():renderKos();}
 function renderRoster(){
   const q=$("search").value.toLowerCase();
   let ms=STATE.members.filter(m=>m.name.toLowerCase().includes(q)||(m.rank||"").toLowerCase().includes(q));
   $("count").textContent=STATE.members.length+" member"+(STATE.members.length===1?"":"s");
   if(!ms.length){$("rosterView").innerHTML='<div class="empty">No members match.</div>';return;}
-  // group by rank
-  const groups={};
-  ms.forEach(m=>{const k=m.rank||"Unranked";(groups[k]=groups[k]||[]).push(m);});
+  const groups={};ms.forEach(m=>{const k=m.rank||"Unranked";(groups[k]=groups[k]||[]).push(m);});
   const names=Object.keys(groups).sort((a,b)=>a==="Unranked"?1:b==="Unranked"?-1:groups[b].length-groups[a].length||a.localeCompare(b));
-  $("rosterView").innerHTML=names.map(rk=>`
-    <div class="ranklabel">${h(rk)} <span class="pill">${groups[rk].length}</span></div>
-    <ul class="members">${groups[rk].map(memberRow).join("")}</ul>`).join("");
+  $("rosterView").innerHTML=names.map(rk=>`<div class="ranklabel">${h(rk)}<span class="pill">${groups[rk].length}</span></div><ul class="members">${groups[rk].map(memberRow).join("")}</ul>`).join("");
 }
-
 function memberRow(m){
   const chips=(m.roles||[]).map(r=>{
     const cls="chip "+(STATE.ranks.some(x=>x.name===r.name)?"rankrole":"")+(r.manageable?"":" locked");
-    const x=r.manageable?`<span class="x" title="Remove role" onclick="removeRole('${h(m.id)}','${h(r.id)}','${h(r.name)}')">✕</span>`:`<span class="x" title="Above the bot — can't change">🔒</span>`;
+    const x=r.manageable?`<span class="x" title="Remove role" onclick="removeRole('${h(m.id)}','${h(r.id)}','${h(r.name)}')">✕</span>`:`<span class="x" style="opacity:.6;width:11px" title="Above the bot">🔒</span>`;
     return `<span class="${cls}">${h(r.name)}${x}</span>`;
   }).join("");
   const have=new Set((m.roles||[]).map(r=>r.name));
   const addable=STATE.ranks.filter(x=>!have.has(x.name));
-  const addsel=addable.length?`<select class="addsel" onchange="addRole('${h(m.id)}',this.value,this);this.value=''">
-      <option value="">+ role</option>${addable.map(x=>`<option value="${h(x.id)}">${h(x.name)}</option>`).join("")}</select>`:"";
-  return `<li class="member" data-id="${h(m.id)}">
-    <img src="${h(m.avatar)}" alt="" loading="lazy">
-    <div class="grow">
-      <div class="mname">${h(m.name)}</div>
-      <div class="chips">${chips||'<span class="chip locked">no gang roles</span>'}${addsel}</div>
-    </div>
-    <div class="rowactions"><button class="danger" onclick="removeMember('${h(m.id)}','${h(m.name)}')">Remove all</button></div>
-  </li>`;
+  const addsel=addable.length?`<select class="addsel" onchange="addRole('${h(m.id)}',this.value,this);this.value=''"><option value="">+ role</option>${addable.map(x=>`<option value="${h(x.id)}">${h(x.name)}</option>`).join("")}</select>`:"";
+  return `<li class="member" data-id="${h(m.id)}"><div class="av"><img src="${h(m.avatar)}" alt="" loading="lazy"></div>
+    <div class="grow"><div class="mname">${h(m.name)}</div><div class="chips">${chips||'<span class="chip locked">no gang roles</span>'}${addsel}</div></div>
+    <button class="danger" onclick="removeMember('${h(m.id)}','${h(m.name)}')">Remove all</button></li>`;
 }
-
 function renderKos(){
   const q=$("search").value.toLowerCase();
   const ks=STATE.kos.filter(k=>k.name.toLowerCase().includes(q));
   $("count").textContent=STATE.kos.length+" on KOS";
-  if(!ks.length){$("kosView").innerHTML='<div class="empty">Nobody on the KOS list.</div>';return;}
-  $("kosView").innerHTML=`<ul class="members">${ks.map(k=>`
-    <li class="member" data-id="${h(k.id)}">
-      ${k.avatar?`<img src="${h(k.avatar)}" alt="" loading="lazy">`:'<div style="width:42px;height:42px;border-radius:50%;background:#2a1212;display:flex;align-items:center;justify-content:center">💀</div>'}
-      <div class="grow"><div class="mname">${h(k.name)}</div>${k.reason?`<div class="reason">${h(k.reason)}</div>`:""}</div>
-      <div class="rowactions"><button class="danger" onclick="removeKos('${h(k.id)}','${h(k.name)}')">Take off KOS</button></div>
-    </li>`).join("")}</ul>`;
+  if(!ks.length){$("kosView").innerHTML='<div class="empty">Nobody on the KOS list. 🕊️</div>';return;}
+  $("kosView").innerHTML=`<ul class="members">${ks.map(k=>`<li class="member" data-id="${h(k.id)}">
+    ${k.avatar?`<div class="av"><img src="${h(k.avatar)}" alt="" loading="lazy"></div>`:'<div class="av skull">💀</div>'}
+    <div class="grow"><div class="mname">${h(k.name)}</div>${k.reason?`<div class="reason">${h(k.reason)}</div>`:""}</div>
+    <button class="danger" onclick="removeKos('${h(k.id)}','${h(k.name)}')">Take off KOS</button></li>`).join("")}</ul>`;
 }
-
-async function post(path,body){
-  return api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
-}
+async function post(path,body){return api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
 async function removeRole(uid,rid,name){
-  try{ await post("/api/role",{guild:STATE.guild,user_id:uid,role_id:rid,action:"remove"});
-    msg("Removed role "+name+".","ok"); await reload(); }
-  catch(e){ if(e.status===401||e.status===403)return boot(); msg(e.message||"Failed.","err"); }
+  try{await post("/api/role",{guild:STATE.guild,user_id:uid,role_id:rid,action:"remove"});toast("Removed role "+name,"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 async function addRole(uid,rid,sel){
-  if(!rid)return; const name=sel.options[sel.selectedIndex].text;
-  try{ await post("/api/role",{guild:STATE.guild,user_id:uid,role_id:rid,action:"add"});
-    msg("Added "+name+".","ok"); await reload(); }
-  catch(e){ if(e.status===401||e.status===403)return boot(); msg(e.message||"Failed.","err"); }
+  if(!rid)return;const name=sel.options[sel.selectedIndex].text;
+  try{await post("/api/role",{guild:STATE.guild,user_id:uid,role_id:rid,action:"add"});toast("Added "+name,"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 async function removeMember(uid,name){
   if(!confirm("Remove "+name+" from the roster and take ALL their gang roles off in Discord?"))return;
-  try{ const r=await post("/api/remove",{guild:STATE.guild,user_id:uid});
-    const f=(r.failed_roles||[]).length?" ⚠️ Couldn't remove: "+r.failed_roles.join(", "):"";
-    msg("Removed "+name+"."+(r.removed_roles?.length?" Roles: "+r.removed_roles.join(", ")+".":"")+f, f?"err":"ok");
-    await reload(); }
-  catch(e){ if(e.status===401||e.status===403)return boot(); msg(e.message||"Failed.","err"); }
+  try{const r=await post("/api/remove",{guild:STATE.guild,user_id:uid});
+    const f=(r.failed_roles||[]).length?" · couldn't remove: "+r.failed_roles.join(", "):"";
+    toast("Removed "+name+(r.removed_roles?.length?" ("+r.removed_roles.join(", ")+")":"")+f,f?"err":"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 async function removeKos(uid,name){
   if(!confirm("Take "+name+" off the KOS list and remove the KOS role?"))return;
-  try{ await post("/api/kos_remove",{guild:STATE.guild,user_id:uid});
-    msg("Took "+name+" off KOS.","ok"); await reload(); }
-  catch(e){ if(e.status===401||e.status===403)return boot(); msg(e.message||"Failed.","err"); }
+  try{await post("/api/kos_remove",{guild:STATE.guild,user_id:uid});toast("Took "+name+" off KOS","ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
-
 boot();
 </script>
 </body>
