@@ -18,6 +18,7 @@ from tenshi_bot.settings import *  # noqa: F401,F403
 from tenshi_bot.panels import *  # noqa: F401,F403
 from tenshi_bot.tickets import *  # noqa: F401,F403
 from tenshi_bot.gang import *  # noqa: F401,F403
+from tenshi_bot.web import *  # noqa: F401,F403
 
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +68,7 @@ async def on_ready() -> None:
         ticket_autoclose_loop.start()
     if not eoi_timer_loop.is_running():
         eoi_timer_loop.start()
+    await start_web_server()
     try:
         synced = await bot.tree.sync()
         log.info("Synced %d slash commands.", len(synced))

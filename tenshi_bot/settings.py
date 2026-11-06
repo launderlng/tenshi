@@ -27,12 +27,13 @@ CONFIG_SETTINGS = {
     "kos_role": ("KOS role", "kos_role_id", "role"),
     "radio_ping_role": ("Radio ping role", "radio_ping_role_id", "role"),
     "eoi_ping_role": ("EOI ping role", "eoi_ping_role_id", "role"),
+    "web_access_role": ("Website access role", "web_role_id", "role"),
 }
 
 
 _SETTING_EMOJI = {
     "leadership_role": "👑", "roster_role": "🎯", "kos_role": "💀",
-    "radio_ping_role": "📻", "eoi_ping_role": "🔔",
+    "radio_ping_role": "📻", "eoi_ping_role": "🔔", "web_access_role": "🌐",
     "welcome_channel": "👋", "staff_channel": "🛡️", "eoi_channel": "📥",
     "transcript_channel": "🧾",
     "log_channel": "📝", "roster_log_channel": "📋", "kos_log_channel": "💀",

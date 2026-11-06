@@ -81,6 +81,7 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `panels.py` | `/role_menu`, `/radio`, `/eoi`, `/eoi_post`, `/gang_help` |
 | `tickets.py` | Ticket system: panel, tickets, transcripts, priority, auto-close, stats |
 | `gang.py` | `/gang`, `/strike`, `/war` |
+| `web.py` | Optional web roster manager (Discord-login gated) |
 
 ## Setup
 
@@ -99,6 +100,32 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 | `DISCORD_TOKEN` | yes | — | Your bot token |
 | `LEADERSHIP_ROLE` | no | `Leadership` | Name of the role allowed to run leadership actions |
 | `DATA_FILE` | no | `gang_data.json` | Where data is saved |
+| `MEMBERS_INTENT` | no | off | Set `true` (and enable Server Members Intent in the portal) for join/leave events |
+| `PORT` | no | — | Set automatically by Railway for a web service; turns on the web roster manager |
+| `DISCORD_CLIENT_SECRET` | no | — | OAuth2 secret (Developer Portal → OAuth2) — required for the web manager login |
+| `WEB_SECRET` | no | derived | Optional extra secret used to sign web sessions |
+
+## Web roster manager (optional)
+
+A browser page, served by the bot itself, to view the roster and remove
+members — which strips their gang roles in Discord live. It's **off** unless
+you set it up, and the bot runs exactly the same without it.
+
+Access is gated by a dedicated **Website access role** (separate from
+leadership): people log in with Discord, and only those holding that role can
+open it. A bot cannot remove anyone's *server tag* — that's controlled by each
+user — so this manages roster roles, not tags.
+
+**Setup**
+1. In the Discord **Developer Portal → OAuth2**, copy the **Client Secret** and
+   add a redirect: `https://<your-railway-domain>/callback`.
+2. In Railway, add a **public domain** (Settings → Networking → Generate Domain)
+   so the service gets a URL and a `PORT`.
+3. Add service variables: `DISCORD_CLIENT_SECRET=<the secret>`.
+4. In Discord, make a role (e.g. `Web Access`) and point the bot at it:
+   `/settings role → 🌐 Website access role`. Give it to whoever should manage
+   the roster.
+5. Open `https://<your-railway-domain>/`, log in with Discord, and you're in.
 
 ## Run locally
 
