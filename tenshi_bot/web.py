@@ -255,6 +255,24 @@ def _strikes_list(guild: "discord.Guild", store: dict) -> list[dict]:
     return out
 
 
+def _remove_strike(store: dict, strike_id: int) -> dict:
+    """Remove ONE strike by its id (mirrors /strike remove)."""
+    hit = next((s for s in store.get("strikes", []) if s.get("id") == strike_id), None)
+    if hit is None:
+        return {"ok": False, "error": f"No strike #{strike_id}."}
+    store["strikes"].remove(hit)
+    save_data(DATA)
+    return {"ok": True, "user_id": hit.get("user_id")}
+
+
+def _clear_strikes(store: dict, user_id: int) -> dict:
+    """Clear ALL of a member's strikes (mirrors /strike clear)."""
+    before = len(store.get("strikes", []))
+    store["strikes"] = [s for s in store.get("strikes", []) if s.get("user_id") != user_id]
+    save_data(DATA)
+    return {"ok": True, "cleared": before - len(store["strikes"])}
+
+
 async def _set_gang_role(guild, store, user_id: int, role_id: int, action: str) -> dict:
     """Add or remove ONE gang role (roster/rank) on a member. Refuses anything
     that isn't a gang role, and anything above the bot."""
@@ -1231,6 +1249,45 @@ async def _h_strikes(request):
     )
 
 
+async def _h_strike_remove(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    try:
+        sid = int(body.get("strike_id"))
+    except (TypeError, ValueError):
+        return _aioweb.json_response({"error": "Bad strike_id."}, status=400)
+    store = guild_store(DATA, guild.id)
+    result = _remove_strike(store, sid)
+    return _aioweb.json_response(result, status=200 if result.get("ok") else 404)
+
+
+async def _h_strike_clear(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    try:
+        uid = int(body.get("user_id"))
+    except (TypeError, ValueError):
+        return _aioweb.json_response({"error": "Bad user_id."}, status=400)
+    store = guild_store(DATA, guild.id)
+    return _aioweb.json_response(_clear_strikes(store, uid))
+
+
 async def _h_eois(request):
     guild = _guild_from(request.query.get("guild"))
     if guild is None:
@@ -1324,6 +1381,8 @@ async def start_web_server() -> None:
             _aioweb.post("/api/stash_scan", _h_stash_scan),
             _aioweb.get("/api/wars", _h_wars),
             _aioweb.get("/api/strikes", _h_strikes),
+            _aioweb.post("/api/strike_remove", _h_strike_remove),
+            _aioweb.post("/api/strike_clear", _h_strike_clear),
             _aioweb.get("/api/eois", _h_eois),
             _aioweb.post("/api/eoi_close", _h_eoi_close),
             _aioweb.post("/api/eoi_accept", _h_eoi_accept),
@@ -1470,6 +1529,8 @@ _PAGE_HTML = """
   .slog .row{font-size:12px;color:var(--mute);display:flex;gap:7px;align-items:baseline;flex-wrap:wrap}
   .slog .row b{color:var(--text);font-weight:600}
   .slog .sid{font-family:ui-monospace,monospace;opacity:.6;font-size:11px}
+  .slog .srm{cursor:pointer;color:var(--mute);font-weight:800;font-size:12px;opacity:.5;transition:.15s;margin-left:2px}
+  .slog .srm:hover{opacity:1;color:#fca5a5}
   /* war extras */
   .wmeta{display:flex;flex-wrap:wrap;gap:4px 14px;margin-top:5px;font-size:12px;color:var(--mute)}
   .wrounds{display:flex;gap:3px;margin-top:9px;flex-wrap:wrap}
@@ -1719,14 +1780,26 @@ function renderStrikes(){
     const lim=m.limit||STATE.strikeLimit||3;
     const bar=Array.from({length:Math.max(lim,m.count)},(_,i)=>`<i class="${i<m.count?'on':''}"></i>`).join("");
     const col=m.over?"var(--bad)":"var(--warn)";
-    const log=(m.strikes||[]).map(s=>`<div class="row"><b>${h(s.reason||"—")}</b><span>${s.by?"by "+h(s.by):""}</span><span>${s.ts?ago(s.ts):""}</span>${s.id!=null?`<span class="sid">#${h(String(s.id))}</span>`:""}</div>`).join("");
+    const log=(m.strikes||[]).map(s=>`<div class="row"><b>${h(s.reason||"—")}</b><span>${s.by?"by "+h(s.by):""}</span><span>${s.ts?ago(s.ts):""}</span>${s.id!=null?`<span class="sid">#${h(String(s.id))}</span><span class="srm" title="Remove this strike" onclick="removeStrike('${h(String(s.id))}','${h(m.name)}')">✕</span>`:""}</div>`).join("");
     return `<li class="member" style="align-items:flex-start">
       ${m.avatar?`<div class="av"><img src="${h(m.avatar)}" alt="" loading="lazy"></div>`:'<div class="av skull" style="background:linear-gradient(135deg,#5a3a0f,#5c3b12)">⚠️</div>'}
       <div class="grow"><div class="mname">${h(m.name)}${m.over?` <span class="sflag over" title="at or over the limit">limit reached</span>`:""}</div>
         <div class="sbar">${bar}</div>
         <div class="slog">${log}</div></div>
-      <div class="scount" style="color:${col}">${m.count}<span style="font-size:13px;color:var(--mute)">/${lim}</span></div></li>`;
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px">
+        <div class="scount" style="color:${col}">${m.count}<span style="font-size:13px;color:var(--mute)">/${lim}</span></div>
+        <button class="danger" onclick="clearStrikes('${h(m.id)}','${h(m.name)}')">Clear all</button></div></li>`;
   }).join("")+`</ul>`;
+}
+async function removeStrike(id,name){
+  if(!confirm("Remove strike #"+id+" from "+name+"?"))return;
+  try{await post("/api/strike_remove",{guild:STATE.guild,strike_id:id});toast("Removed strike #"+id,"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
+}
+async function clearStrikes(uid,name){
+  if(!confirm("Clear ALL strikes from "+name+"? This can't be undone."))return;
+  try{const r=await post("/api/strike_clear",{guild:STATE.guild,user_id:uid});toast("Cleared "+(r.cleared||0)+" strike"+((r.cleared||0)===1?"":"s")+" from "+name,"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 async function post(path,body){return api(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
 async function removeRole(uid,rid,name){
