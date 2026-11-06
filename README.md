@@ -107,9 +107,18 @@ All channel/role settings live in `/settings`. Staff commands need the leadershi
 
 ## Web roster manager (optional)
 
-A browser page, served by the bot itself, to view the roster and remove
-members — which strips their gang roles in Discord live. It's **off** unless
-you set it up, and the bot runs exactly the same without it.
+A browser page, served by the bot itself, that mirrors a lot of the bot. It's
+**off** unless you set it up, and the bot runs exactly the same without it.
+
+- **Overview strip** — live counts (ranked, KOS, open EOIs, strikes 30d, wars, radio).
+- **Roster tab** — everyone grouped by rank. Per member you can **remove an
+  individual role** (the ✕ on each role chip), **add a rank** (the `+ role`
+  dropdown), or **Remove all** (strip every gang role at once). Roles above the
+  bot show a 🔒 and can't be touched.
+- **KOS tab** — the KOS list with reasons, and **Take off KOS** (removes the KOS
+  role + list entry).
+
+Every change applies to Discord live.
 
 Access is gated by a dedicated **Website access role** (separate from
 leadership): people log in with Discord, and only those holding that role can
