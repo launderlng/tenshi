@@ -52,15 +52,23 @@ def _gang_role_ids(guild: "discord.Guild", store: dict) -> set[int]:
     return ids
 
 
-def _top_rank_name(guild: "discord.Guild", store: dict, member) -> str | None:
-    """The highest-positioned rank the member currently holds, by role position."""
-    best_name, best_pos = None, -1
-    member_role_ids = {r.id for r in getattr(member, "roles", [])}
-    for r in store.get("ranks", []):
-        role = guild.get_role(r.get("role_id"))
-        if role is not None and role.id in member_role_ids and role.position > best_pos:
-            best_name, best_pos = r["name"], role.position
-    return best_name
+# Fixed rank hierarchy for the website, highest first. Ranks not listed here
+# show after these, ordered by their Discord position. Edit this list to reorder.
+_RANK_ORDER = ["bot", "gov", "shodai", "leadership", "hierarchy", "honorary", "tenshi"]
+# Roles never shown on the website — not as chips, rank groups, or add options.
+_HIDDEN_ROLES = {".", "cee fuck", "ceefu"}
+
+
+def _hidden_role(name: str) -> bool:
+    return (name or "").strip().lower() in _HIDDEN_ROLES
+
+
+def _rank_idx(name: str) -> int:
+    """Index in the fixed hierarchy (0 = top); unlisted ranks sort after."""
+    try:
+        return _RANK_ORDER.index((name or "").strip().lower())
+    except ValueError:
+        return len(_RANK_ORDER)
 
 
 def _manageable(guild, role) -> bool:
@@ -69,10 +77,31 @@ def _manageable(guild, role) -> bool:
     return me is not None and role.position < me.top_role.position
 
 
+def _top_rank_name(guild: "discord.Guild", store: dict, member) -> str | None:
+    """The member's top rank by the fixed hierarchy (then Discord position),
+    among configured ranks they hold, ignoring hidden roles."""
+    member_role_ids = {r.id for r in getattr(member, "roles", [])}
+    cands = []
+    for r in store.get("ranks", []):
+        role = guild.get_role(r.get("role_id"))
+        name = r.get("name") or (role.name if role is not None else "")
+        if (
+            role is not None
+            and role.id in member_role_ids
+            and not _hidden_role(name)
+            and not _hidden_role(role.name)
+        ):
+            cands.append((_rank_idx(name), -role.position, name))
+    if not cands:
+        return None
+    cands.sort()
+    return cands[0][2]
+
+
 def _roster_members(guild: "discord.Guild", store: dict) -> list[dict]:
     """Everyone on the roster: holders of any gang role, plus anyone still on the
-    stored roster list. Each gang role is returned as {id,name,manageable} so the
-    page can remove individual roles, not just the whole member."""
+    stored roster list. Each gang role is returned as {id,name,manageable},
+    ordered by the fixed hierarchy, with hidden roles dropped."""
     role_ids = _gang_role_ids(guild, store)
     found: dict[int, object] = {}
 
@@ -91,10 +120,15 @@ def _roster_members(guild: "discord.Guild", store: dict) -> list[dict]:
 
     out = []
     for m in found.values():
+        gang = [
+            r
+            for r in getattr(m, "roles", [])
+            if r.id in role_ids and not _hidden_role(r.name)
+        ]
+        gang.sort(key=lambda r: (_rank_idx(r.name), -r.position))
         roles = [
             {"id": str(r.id), "name": r.name, "manageable": _manageable(guild, r)}
-            for r in sorted(getattr(m, "roles", []), key=lambda r: r.position, reverse=True)
-            if r.id in role_ids
+            for r in gang
         ]
         out.append(
             {
@@ -111,19 +145,26 @@ def _roster_members(guild: "discord.Guild", store: dict) -> list[dict]:
 
 def _rank_options(guild: "discord.Guild", store: dict) -> list[dict]:
     """Gang roles a member can be *given* from the web (base roster role + ranks),
-    limited to ones the bot can actually manage."""
+    limited to ones the bot can manage, hidden roles dropped, ordered by hierarchy."""
     opts, seen = [], set()
     rid = store.get("roster_role_id")
     base = guild.get_role(rid) if rid else None
-    if base is not None and _manageable(guild, base):
-        opts.append({"id": str(base.id), "name": base.name})
+    if base is not None and _manageable(guild, base) and not _hidden_role(base.name):
+        opts.append({"id": str(base.id), "name": base.name, "_i": _rank_idx(base.name)})
         seen.add(base.id)
     for r in store.get("ranks", []):
         role = guild.get_role(r.get("role_id"))
-        if role is not None and role.id not in seen and _manageable(guild, role):
-            opts.append({"id": str(role.id), "name": r["name"]})
+        if (
+            role is not None
+            and role.id not in seen
+            and _manageable(guild, role)
+            and not _hidden_role(role.name)
+            and not _hidden_role(r.get("name"))
+        ):
+            opts.append({"id": str(role.id), "name": r["name"], "_i": _rank_idx(r["name"])})
             seen.add(role.id)
-    return opts
+    opts.sort(key=lambda o: (o["_i"], o["name"].lower()))
+    return [{"id": o["id"], "name": o["name"]} for o in opts]
 
 
 def _overview(guild: "discord.Guild", store: dict) -> dict:
@@ -530,6 +571,7 @@ async def _h_roster(request):
             "guild": {"id": str(guild.id), "name": guild.name},
             "members": _roster_members(guild, store),
             "ranks": _rank_options(guild, store),
+            "rank_order": _RANK_ORDER,
         }
     )
 
@@ -899,7 +941,7 @@ async function reload(){
     const [ov,ro,ko]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g)]);
     $("sub").textContent=ro.guild?.name||"Roster";
     renderStats(ov.overview);
-    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];
+    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];
     render();
   }catch(e){ if(e.status===401||e.status===403) return boot(); toast(e.message||"Failed to load.","err"); }
 }
@@ -927,7 +969,13 @@ function renderRoster(){
   $("count").textContent=STATE.members.length+" member"+(STATE.members.length===1?"":"s");
   if(!ms.length){$("rosterView").innerHTML='<div class="empty">No members match.</div>';return;}
   const groups={};ms.forEach(m=>{const k=m.rank||"Unranked";(groups[k]=groups[k]||[]).push(m);});
-  const names=Object.keys(groups).sort((a,b)=>a==="Unranked"?1:b==="Unranked"?-1:groups[b].length-groups[a].length||a.localeCompare(b));
+  const order=STATE.rank_order||[];
+  const ri=n=>{const i=order.indexOf((n||"").toLowerCase());return i<0?order.length:i;};
+  const names=Object.keys(groups).sort((a,b)=>{
+    if(a==="Unranked")return 1;if(b==="Unranked")return -1;
+    const d=ri(a)-ri(b);if(d)return d;
+    return groups[b].length-groups[a].length||a.localeCompare(b);
+  });
   $("rosterView").innerHTML=names.map(rk=>`<div class="ranklabel">${h(rk)}<span class="pill">${groups[rk].length}</span></div><ul class="members">${groups[rk].map(memberRow).join("")}</ul>`).join("");
 }
 function memberRow(m){
