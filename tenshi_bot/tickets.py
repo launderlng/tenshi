@@ -681,10 +681,7 @@ class OrderTicketView(discord.ui.View):
     async def claim(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only staff can claim tickets.", ephemeral=True
-            )
+        if await _deny(interaction, "claim tickets", who="staff"):
             return
         await interaction.response.defer()
         store = guild_store(DATA, interaction.guild_id)
@@ -727,10 +724,7 @@ class OrderTicketView(discord.ui.View):
     async def mark_paid(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only staff can mark orders paid.", ephemeral=True
-            )
+        if await _deny(interaction, "mark orders paid", who="staff"):
             return
         await interaction.response.defer()
         store = guild_store(DATA, interaction.guild_id)
@@ -771,10 +765,7 @@ class OrderTicketView(discord.ui.View):
     async def priority(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only staff can set priority.", ephemeral=True
-            )
+        if await _deny(interaction, "set priority", who="staff"):
             return
         store = guild_store(DATA, interaction.guild_id)
         order = _find_order_by_channel(store, interaction.channel_id)
@@ -865,10 +856,7 @@ async def ticket_type_add(
     category: discord.CategoryChannel | None = None,
     emoji: str | None = None,
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can add ticket types.", ephemeral=True
-        )
+    if await _deny(interaction, "add ticket types"):
         return
     store = guild_store(DATA, interaction.guild_id)
     types = store["ticket_types"]
@@ -904,10 +892,7 @@ async def ticket_type_add(
 @app_commands.describe(name="The ticket type to remove")
 @app_commands.autocomplete(name=ticket_type_autocomplete)
 async def ticket_type_remove(interaction: discord.Interaction, name: str) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can remove ticket types.", ephemeral=True
-        )
+    if await _deny(interaction, "remove ticket types"):
         return
     store = guild_store(DATA, interaction.guild_id)
     before = len(store["ticket_types"])
@@ -938,10 +923,7 @@ async def ticket_type_remove(interaction: discord.Interaction, name: str) -> Non
     description="Remove ALL ticket types at once (leadership)",
 )
 async def ticket_type_clear(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can clear ticket types.", ephemeral=True
-        )
+    if await _deny(interaction, "clear ticket types"):
         return
     store = guild_store(DATA, interaction.guild_id)
     count = len(store["ticket_types"])
@@ -994,10 +976,7 @@ async def ticket_set_category(
     interaction: discord.Interaction,
     category: discord.CategoryChannel | None = None,
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set the ticket category.", ephemeral=True
-        )
+    if await _deny(interaction, "set the ticket category"):
         return
     store = guild_store(DATA, interaction.guild_id)
     store["ticket_category_id"] = category.id if category else None
@@ -1022,10 +1001,7 @@ async def ticket_set_category(
 async def ticket_panel(
     interaction: discord.Interaction, message: str | None = None
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can post the ticket panel.", ephemeral=True
-        )
+    if await _deny(interaction, "post the ticket panel"):
         return
     store = guild_store(DATA, interaction.guild_id)
     options: list[discord.SelectOption] = []
@@ -1075,10 +1051,7 @@ async def ticket_panel(
     description="Open or close new ticket orders for everyone (leadership)",
 )
 async def ticket_toggle(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can open/close ticket orders.", ephemeral=True
-        )
+    if await _deny(interaction, "open/close ticket orders"):
         return
     store = guild_store(DATA, interaction.guild_id)
     now_open = not store.get("tickets_open", True)
@@ -1100,10 +1073,7 @@ async def ticket_toggle(interaction: discord.Interaction) -> None:
     description="Show the board of active orders, grouped by type (staff)",
 )
 async def ticket_board(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only staff can view the orders board.", ephemeral=True
-        )
+    if await _deny(interaction, "view the orders board", who="staff"):
         return
     store = guild_store(DATA, interaction.guild_id)
     await interaction.response.send_message(
@@ -1114,10 +1084,7 @@ async def ticket_board(interaction: discord.Interaction) -> None:
 async def _ticket_member_access(
     interaction: discord.Interaction, member: discord.Member, allow: bool
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only staff can change who's in a ticket.", ephemeral=True
-        )
+    if await _deny(interaction, "change who's in a ticket", who="staff"):
         return
     store = guild_store(DATA, interaction.guild_id)
     order = _find_order_by_channel(store, interaction.channel_id)
@@ -1248,10 +1215,7 @@ async def _autoclose_error(exc: BaseException) -> None:
 )
 @app_commands.describe(hours="Hours of silence before a warning, then auto-close (0 turns it off)")
 async def ticket_autoclose(interaction: discord.Interaction, hours: app_commands.Range[int, 0, 720]) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can change auto-close.", ephemeral=True
-        )
+    if await _deny(interaction, "change auto-close"):
         return
     store = guild_store(DATA, interaction.guild_id)
     store["ticket_autoclose_hours"] = hours
@@ -1273,8 +1237,7 @@ async def ticket_autoclose(interaction: discord.Interaction, hours: app_commands
 
 @ticket_group.command(name="stats", description="Ticket analytics & staff leaderboard (staff)")
 async def ticket_stats(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message("Only staff can view stats.", ephemeral=True)
+    if await _deny(interaction, "view stats", who="staff"):
         return
     store = guild_store(DATA, interaction.guild_id)
     orders = store["orders"]

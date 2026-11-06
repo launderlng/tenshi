@@ -20,10 +20,7 @@ async def role_menu_add(
     role: discord.Role,
     description: str | None = None,
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can edit the role menu.", ephemeral=True
-        )
+    if await _deny(interaction, "edit the role menu"):
         return
     store = guild_store(DATA, interaction.guild_id)
     roles = store["self_roles"]
@@ -59,10 +56,7 @@ async def role_menu_add(
 async def role_menu_remove(
     interaction: discord.Interaction, role: discord.Role
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can edit the role menu.", ephemeral=True
-        )
+    if await _deny(interaction, "edit the role menu"):
         return
     store = guild_store(DATA, interaction.guild_id)
     before = len(store["self_roles"])
@@ -107,10 +101,7 @@ async def role_menu_post(
     title: str | None = None,
     description: str | None = None,
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can post the role menu.", ephemeral=True
-        )
+    if await _deny(interaction, "post the role menu"):
         return
     store = guild_store(DATA, interaction.guild_id)
     options: list[discord.SelectOption] = []
@@ -220,10 +211,7 @@ class RadioPanelView(discord.ui.View):
     async def new_radio(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can roll a new radio.", ephemeral=True
-            )
+        if await _deny(interaction, "roll a new radio"):
             return
         await interaction.response.defer()
 
@@ -273,10 +261,7 @@ RADIO_PANEL_VIEW = RadioPanelView()
     description="Roll a new random radio frequency and post it here (leadership)",
 )
 async def radio_new(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can roll a new radio.", ephemeral=True
-        )
+    if await _deny(interaction, "roll a new radio"):
         return
     store = guild_store(DATA, interaction.guild_id)
     freq = _roll_frequency()
@@ -320,10 +305,7 @@ async def radio_view(interaction: discord.Interaction) -> None:
     description="Post a radio panel with a New Radio button (leadership)",
 )
 async def radio_panel(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can post the radio panel.", ephemeral=True
-        )
+    if await _deny(interaction, "post the radio panel"):
         return
     store = guild_store(DATA, interaction.guild_id)
     await _send_card(
@@ -355,10 +337,7 @@ async def eoi(interaction: discord.Interaction) -> None:
 async def eoi_post(
     interaction: discord.Interaction, message: str | None = None
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can post the EOI prompt.", ephemeral=True
-        )
+    if await _deny(interaction, "post the EOI prompt"):
         return
 
     store = guild_store(DATA, interaction.guild_id)

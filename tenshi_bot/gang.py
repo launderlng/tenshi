@@ -17,11 +17,6 @@ war_group = app_commands.Group(name="war", description="Gang war tracker")
 gang_group = app_commands.Group(name="gang", description="Gang dashboard & member profiles")
 
 
-async def _deny(interaction: discord.Interaction, what: str = "do that") -> bool:
-    if is_leadership(interaction.user):
-        return False
-    await interaction.response.send_message(f"Only leadership can {what}.", ephemeral=True)
-    return True
 
 
 # ---- strikes ---------------------------------------------------------------- #
@@ -275,10 +270,7 @@ class WarPanelView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def _click(self, interaction: discord.Interaction, action: str) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only staff can update the war score.", ephemeral=True
-            )
+        if await _deny(interaction, "update the war score", who="staff"):
             return
         store = guild_store(DATA, interaction.guild_id)
         war = _war_by_panel(store, interaction.message.id)

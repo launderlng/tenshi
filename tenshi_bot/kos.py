@@ -156,10 +156,7 @@ async def kos_remove(
     description="Full KOS roster reset — clears the list and takes the KOS role off everyone (leadership)",
 )
 async def kos_reset(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can reset the KOS roster.", ephemeral=True
-        )
+    if await _deny(interaction, "reset the KOS roster"):
         return
     await interaction.response.defer()
     guild = interaction.guild
@@ -301,10 +298,7 @@ class StaffDrawView(discord.ui.View):
     async def draw(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can draw the roster.", ephemeral=True
-            )
+        if await _deny(interaction, "draw the roster"):
             return
         store = guild_store(DATA, interaction.guild_id)
         link = store["kos_draws"].get(str(interaction.message.id))
@@ -493,10 +487,7 @@ class RosterProposalView(discord.ui.View):
     async def approve(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can approve.", ephemeral=True
-            )
+        if await _deny(interaction, "approve"):
             return
         store, prop = self._get(interaction)
         if not prop:
@@ -593,10 +584,7 @@ class RosterProposalView(discord.ui.View):
     async def reshuffle(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can reshuffle.", ephemeral=True
-            )
+        if await _deny(interaction, "reshuffle"):
             return
         store, prop = self._get(interaction)
         if not prop or prop.get("status") == "approved":
@@ -624,10 +612,7 @@ class RosterProposalView(discord.ui.View):
     async def remove(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can edit the roster.", ephemeral=True
-            )
+        if await _deny(interaction, "edit the roster"):
             return
         store, prop = self._get(interaction)
         if not prop or not prop.get("roster") or prop.get("status") == "approved":
@@ -649,10 +634,7 @@ class RosterProposalView(discord.ui.View):
     async def add(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can edit the roster.", ephemeral=True
-            )
+        if await _deny(interaction, "edit the roster"):
             return
         store, prop = self._get(interaction)
         if not prop or not prop.get("bench") or prop.get("status") == "approved":
@@ -692,10 +674,7 @@ async def kos_start(
     roster_channel: discord.TextChannel | None = None,
     ping_role: discord.Role | None = None,
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can start a roster.", ephemeral=True
-        )
+    if await _deny(interaction, "start a roster"):
         return
     if size < 1:
         await interaction.response.send_message(

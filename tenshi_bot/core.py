@@ -200,6 +200,21 @@ def is_leadership(member: discord.Member) -> bool:
     return any(r.name == LEADERSHIP_ROLE_NAME for r in member.roles)
 
 
+async def _deny(
+    interaction: discord.Interaction, what: str = "do that", who: str = "leadership"
+) -> bool:
+    """The one permission gate for every command. If the user isn't leadership,
+    send a uniform ephemeral "Only {who} can {what}." and return True (so the
+    caller returns). Otherwise return False. `who` only changes the wording —
+    there's no separate staff role, so staff actions still require leadership."""
+    if is_leadership(interaction.user):
+        return False
+    await interaction.response.send_message(
+        f"Only {who} can {what}.", ephemeral=True
+    )
+    return True
+
+
 def _leadership_role(
     guild: discord.Guild, store: dict[str, Any]
 ) -> discord.Role | None:
@@ -742,10 +757,7 @@ class EOIView(discord.ui.View):
     async def set_timer(
         self, interaction: discord.Interaction, select: discord.ui.Select
     ) -> None:
-        if not is_leadership(interaction.user):
-            await interaction.response.send_message(
-                "Only leadership can set the EOI timer.", ephemeral=True
-            )
+        if await _deny(interaction, "set the EOI timer"):
             return
         await interaction.response.defer()
         msg = interaction.message

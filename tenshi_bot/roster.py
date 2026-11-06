@@ -167,10 +167,7 @@ async def rank_autocomplete(
 async def roster_rank_set(
     interaction: discord.Interaction, name: str, role: discord.Role
 ) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can set ranks.", ephemeral=True
-        )
+    if await _deny(interaction, "set ranks"):
         return
     store = guild_store(DATA, interaction.guild_id)
     ranks = store["ranks"]
@@ -207,10 +204,7 @@ async def roster_rank_set(
 @app_commands.describe(name="The rank name to remove")
 @app_commands.autocomplete(name=rank_autocomplete)
 async def roster_rank_remove(interaction: discord.Interaction, name: str) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can remove ranks.", ephemeral=True
-        )
+    if await _deny(interaction, "remove ranks"):
         return
     store = guild_store(DATA, interaction.guild_id)
     before = len(store["ranks"])
@@ -254,10 +248,7 @@ async def roster_rank_list(interaction: discord.Interaction) -> None:
     description="Add every server role as a rank in one go (leadership)",
 )
 async def roster_import_roles(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can import roles.", ephemeral=True
-        )
+    if await _deny(interaction, "import roles"):
         return
     store = guild_store(DATA, interaction.guild_id)
     ranks = store["ranks"]
@@ -451,10 +442,7 @@ async def roster_remove(
     description="Wipe the roster list (keeps everyone's role) (leadership)",
 )
 async def roster_reset(interaction: discord.Interaction) -> None:
-    if not is_leadership(interaction.user):
-        await interaction.response.send_message(
-            "Only leadership can reset the roster.", ephemeral=True
-        )
+    if await _deny(interaction, "reset the roster"):
         return
     store = guild_store(DATA, interaction.guild_id)
     count = len(store["roster"])
