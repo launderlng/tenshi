@@ -361,8 +361,21 @@ def _parse_stash_text(text: str) -> list[dict]:
     return [{"item": k, "qty": v} for k, v in merged.items()]
 
 
+def _ocr_available() -> bool:
+    """True only if the Tesseract engine is actually callable."""
+    try:
+        import pytesseract
+
+        pytesseract.get_tesseract_version()
+        return True
+    except Exception:
+        return False
+
+
 def _ocr_image(data: bytes) -> str:
-    """OCR an uploaded screenshot. Returns '' if OCR tooling isn't available."""
+    """OCR an uploaded screenshot. Returns '' if OCR tooling isn't available.
+    Game inventories are usually light text on a dark background, which Tesseract
+    reads badly, so dark images are inverted first."""
     try:
         import io as _io
 
@@ -372,11 +385,23 @@ def _ocr_image(data: bytes) -> str:
         img = Image.open(_io.BytesIO(data)).convert("RGB")
         g = ImageOps.grayscale(img)
         big = max(g.size) or 1
-        if big < 1500:
-            scale = 1500 / big
+        if big < 2000:  # upscale small screenshots so small item text is legible
+            scale = 2000 / big
             g = g.resize((max(int(g.width * scale), 1), max(int(g.height * scale), 1)))
         g = ImageOps.autocontrast(g)
-        return pytesseract.image_to_string(g)
+        # invert when mostly dark (light-on-dark UI) -> dark-on-light for Tesseract
+        hist = g.histogram()
+        if sum(hist[:128]) > sum(hist[128:]):
+            g = ImageOps.invert(g)
+        best = ""
+        for psm in (6, 11, 4):  # block, sparse, column — keep whichever reads most
+            try:
+                out = pytesseract.image_to_string(g, config=f"--psm {psm}")
+            except Exception:
+                continue
+            if len(out.strip()) > len(best.strip()):
+                best = out
+        return best
     except Exception as exc:  # tesseract missing, bad image, etc.
         log.info("OCR unavailable/failed: %s", exc)
         return ""
@@ -851,15 +876,21 @@ async def _h_stash_scan(request):
         return _aioweb.json_response({"error": "No image uploaded."}, status=400)
     if len(data) > 12 * 1024 * 1024:
         return _aioweb.json_response({"error": "Image too big (max 12 MB)."}, status=400)
-    text = _ocr_image(data)
-    if not text.strip():
+    if not _ocr_available():
         return _aioweb.json_response(
             {"candidates": [], "ocr": False,
-             "note": "Couldn't read any text from that image (OCR may be unavailable)."}
+             "note": "The OCR engine (Tesseract) isn't installed on the server yet — "
+                     "the next deploy adds it. You can still add items by hand."}
         )
-    return _aioweb.json_response(
-        {"candidates": _parse_stash_text(text), "ocr": True}
-    )
+    text = _ocr_image(data)
+    cands = _parse_stash_text(text)
+    if not cands:
+        return _aioweb.json_response(
+            {"candidates": [], "ocr": True,
+             "note": "Couldn't read items from that screenshot — try a bigger/clearer "
+                     "crop of just the item list."}
+        )
+    return _aioweb.json_response({"candidates": cands, "ocr": True})
 
 
 async def _h_wars(request):
@@ -1063,7 +1094,7 @@ _PAGE_HTML = """
   @keyframes spin{to{transform:rotate(360deg)}}
 
   /* toasts */
-  #toasts{position:fixed;top:14px;right:14px;z-index:60;display:flex;flex-direction:column;gap:8px;max-width:360px}
+  #toasts{position:fixed;top:78px;right:14px;z-index:60;display:flex;flex-direction:column;gap:8px;max-width:360px}
   .toast{padding:12px 15px;border-radius:13px;font-size:14px;font-weight:500;color:#fff;
     background:rgba(20,20,26,.92);border:1px solid var(--line);backdrop-filter:blur(10px);
     box-shadow:0 10px 30px rgba(0,0,0,.5);animation:toastin .25s ease}
