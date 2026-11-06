@@ -1025,6 +1025,15 @@ async def _h_logout(request):
     return resp
 
 
+def _web_actor(request, guild):
+    """The logged-in website user as a guild member (for log attribution), or None."""
+    try:
+        uid = _read_session(request.cookies.get(_COOKIE))
+        return guild.get_member(int(uid)) if uid else None
+    except (TypeError, ValueError):
+        return None
+
+
 async def _gate(request, guild) -> tuple[bool, int, str]:
     """Allow only a logged-in user who holds this guild's website-access role."""
     if not _configured():
@@ -1266,6 +1275,15 @@ async def _h_strike_remove(request):
         return _aioweb.json_response({"error": "Bad strike_id."}, status=400)
     store = guild_store(DATA, guild.id)
     result = _remove_strike(store, sid)
+    if result.get("ok"):
+        try:
+            await send_log(
+                guild, store,
+                f"🗑️ Strike `#{sid}` removed from <@{result.get('user_id')}> via the website.",
+                category="roster", actor=_web_actor(request, guild),
+            )
+        except discord.HTTPException:
+            pass
     return _aioweb.json_response(result, status=200 if result.get("ok") else 404)
 
 
@@ -1285,7 +1303,17 @@ async def _h_strike_clear(request):
     except (TypeError, ValueError):
         return _aioweb.json_response({"error": "Bad user_id."}, status=400)
     store = guild_store(DATA, guild.id)
-    return _aioweb.json_response(_clear_strikes(store, uid))
+    result = _clear_strikes(store, uid)
+    if result.get("cleared"):
+        try:
+            await send_log(
+                guild, store,
+                f"🧹 Cleared **{result['cleared']}** strike(s) from <@{uid}> via the website.",
+                category="roster", actor=_web_actor(request, guild),
+            )
+        except discord.HTTPException:
+            pass
+    return _aioweb.json_response(result)
 
 
 async def _h_eois(request):
