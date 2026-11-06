@@ -1157,19 +1157,24 @@ async def _h_eoi_close(request):
         return _aioweb.json_response({"error": msg}, status=code)
     mid = str(body.get("msg_id") or "")
     store = guild_store(DATA, guild.id)
-    rec = store.get("eoi_timers", {}).get(mid)
-    if rec is None or not rec.get("channel_id"):
-        return _aioweb.json_response(
-            {"error": "Can't close that EOI (no channel on record)."}, status=400
-        )
-    if rec.get("done"):
-        return _aioweb.json_response({"ok": True, "already": True})
-    rec["done"] = True  # mark ended first, same as the timer loop does
+    if mid not in store.get("eoi_apps", {}):
+        return _aioweb.json_response({"error": "That application no longer exists."}, status=404)
+    # Force close: work from whatever we have. Fall back to the configured EOI
+    # channel when the timer has none on record (older applications).
+    rec = dict(store.get("eoi_timers", {}).get(mid) or {})
+    if not rec.get("channel_id"):
+        rec["channel_id"] = store.get("eoi_channel_id")
+    # Always mark it ended and drop it off the pending list, even if the post is
+    # gone or can't be edited.
+    timer = store.setdefault("eoi_timers", {}).setdefault(mid, {})
+    timer["done"] = True
+    if rec.get("channel_id"):
+        timer["channel_id"] = rec["channel_id"]
     save_data(DATA)
     try:
         await _close_eoi(guild, store, int(mid), rec)
     except (discord.HTTPException, ValueError) as exc:
-        log.info("web EOI close failed: %s", exc)
+        log.info("web EOI force-close: couldn't edit the post (%s)", exc)
     return _aioweb.json_response({"ok": True})
 
 
