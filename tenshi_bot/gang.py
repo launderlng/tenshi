@@ -487,7 +487,7 @@ def _dashboard_cards(guild: discord.Guild, store: dict[str, Any]) -> list[discor
     hq.add_field(name="👥 Ranked", value=f"**{len(ranked_ids)}**")
     hq.add_field(name="💀 On KOS", value=f"**{len(store['kos'])}**")
     hq.add_field(name="⚠️ Strikes 30d", value=f"**{recent_strikes}**")
-    hq.add_field(name="📨 Open EOIs", value=f"**{open_eois}**")
+    hq.add_field(name="📨 Pending EOIs", value=f"**{open_eois}**")
     hq.add_field(name="📻 Radio", value=f"`{store.get('radio_freq') or '—'}`")
     if guild.banner:
         hq.set_image(url=guild.banner.url)

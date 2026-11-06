@@ -279,9 +279,47 @@ async def _remove_kos(guild, store, user_id: int) -> dict:
 
 # ---- stash (gang inventory) ------------------------------------------------- #
 
+# A matching emoji per item, picked from keywords in its name. Not the real game
+# icon (that needs a trained model), just a quick visual.
+_ICON_MAP = [
+    (("pistol", "rifle", "smg", "shotgun", "weapon", " gun", "ak", "revolver",
+      "knife", "machete", "bat", "sniper"), "🔫"),
+    (("ammo", "round", "bullet", " mag", "clip", "shell"), "🧨"),
+    (("money", "cash", "dollar", "dirty", "marked", "bank", "chip", "token"), "💵"),
+    (("gold", "diamond", "ring", "rolex", "jewel", "necklace", "watch"), "💎"),
+    (("weed", "coke", "cocaine", "meth", "crack", "drug", "baggie", "joint",
+      "oxy", "pill", "lean", "ket", "acid", "lsd", "shroom"), "💊"),
+    (("burger", "taco", "sandwich", "bread", "meat", "food", "donut", "pizza",
+      "chips", "apple", "banana"), "🍔"),
+    (("water", "soda", "cola", "beer", "juice", "drink", "coffee", "energy", "milk"), "🥤"),
+    (("lockpick", "drill", "tool", "screwdriver", "wrench", "hammer", "thermite",
+      "advanced", "kit"), "🛠️"),
+    (("bandage", "medkit", "medical", "health", "firstaid", "first aid", "heal",
+      "painkiller", "morphine"), "🩹"),
+    (("phone", "tablet", "laptop", "radio", "gps"), "📱"),
+    (("key", "fob"), "🔑"),
+    (("cigarette", "cigar", "lighter", "rolling"), "🚬"),
+    (("fish", "bait", "rod"), "🐟"),
+]
+
+
+def _item_icon(name: str) -> str:
+    n = " " + (name or "").lower()
+    for keys, emoji in _ICON_MAP:
+        if any(k in n for k in keys):
+            return emoji
+    return "📦"
+
+
 def _stash_items(store: dict) -> list[dict]:
     out = [
-        {"item": s.get("item", ""), "qty": int(s.get("qty", 0))}
+        {
+            "item": s.get("item", ""),
+            "qty": int(s.get("qty", 0)),
+            "weight": round(float(s.get("weight", 0) or 0), 2),
+            "icon": _item_icon(s.get("item", "")),
+            "image": s.get("image", "") or "",
+        }
         for s in store.get("stash", [])
         if s.get("item")
     ]
@@ -289,9 +327,13 @@ def _stash_items(store: dict) -> list[dict]:
     return out
 
 
-def _stash_upsert(store: dict, item: str, qty, mode: str = "set") -> dict:
+def _stash_upsert(
+    store: dict, item: str, qty, mode: str = "set", weight=None, image=None
+) -> dict:
     """Add/set an item in the stash. mode 'add' increments, 'set' replaces.
-    Items that drop to 0 or below are removed."""
+    Items that drop to 0 or below are removed. `weight` (per-unit kg) and `image`
+    (a data: URI icon cropped from a screenshot) are optional; a kept image
+    survives when more of the item is added."""
     item = (item or "").strip()
     if not item:
         return {"ok": False, "error": "Item name is required."}
@@ -306,9 +348,16 @@ def _stash_upsert(store: dict, item: str, qty, mode: str = "set") -> dict:
             hit = s
             break
     if hit is None:
-        hit = {"item": item, "qty": 0}
+        hit = {"item": item, "qty": 0, "weight": 0, "image": ""}
         stash.append(hit)
     hit["qty"] = (int(hit.get("qty", 0)) + qty) if mode == "add" else qty
+    if weight is not None and str(weight) != "":
+        try:
+            hit["weight"] = max(float(weight), 0)
+        except (TypeError, ValueError):
+            pass
+    if image and isinstance(image, str) and image.startswith("data:"):
+        hit["image"] = image[:200000]  # keep a cropped icon; cap size
     store["stash"] = [s for s in stash if int(s.get("qty", 0)) > 0]
     save_data(DATA)
     return {"ok": True, "item": item, "qty": max(int(hit["qty"]), 0)}
@@ -326,17 +375,20 @@ def _stash_remove(store: dict, item: str) -> dict:
 
 _STASH_SKIP = {
     "inventory", "stash", "trunk", "weight", "items", "item", "qty", "quantity",
-    "glovebox", "pocket", "pockets", "name", "amount", "total", "search",
+    "glovebox", "pocket", "pockets", "name", "amount", "total", "search", "slots",
+    "kg", "lb", "capacity", "used", "free",
 }
+# Weight readouts to ignore: "40/50", "12.5 kg", "40 / 50 KG", etc.
+_WEIGHT_RE = re.compile(r"\d+\s*/\s*\d+|\d+(?:[.,]\d+)?\s*(?:kg|kgs|lb|lbs|oz|g)\b", re.I)
 
 
 def _parse_stash_text(text: str) -> list[dict]:
-    """Best-effort: turn OCR'd lines into {item, qty} candidates. Imperfect — the
-    page shows these for the user to confirm, never auto-saved."""
+    """Best-effort: turn OCR'd lines into {item, qty, icon} candidates. Skips the
+    weight readout. Imperfect — the page shows these to confirm, never auto-saved."""
     out = []
     for raw in (text or "").splitlines():
         line = raw.strip()
-        if not line:
+        if not line or _WEIGHT_RE.search(line):  # drop weight bars / per-item weight
             continue
         qty = 1
         m = (
@@ -358,7 +410,7 @@ def _parse_stash_text(text: str) -> list[dict]:
     merged: dict[str, int] = {}
     for c in out:
         merged[c["item"]] = merged.get(c["item"], 0) + c["qty"]
-    return [{"item": k, "qty": v} for k, v in merged.items()]
+    return [{"item": k, "qty": v, "icon": _item_icon(k)} for k, v in merged.items()]
 
 
 def _ocr_available() -> bool:
@@ -407,6 +459,81 @@ def _ocr_image(data: bytes) -> str:
         return ""
 
 
+def _scan_stash(data: bytes) -> list[dict]:
+    """OCR an uploaded screenshot into {item, qty, icon, image} candidates, where
+    `image` is a small icon cropped from the screenshot next to each item's text.
+    Best-effort: inventory layouts vary, so some crops will be off. Returns [] if
+    OCR tooling is unavailable."""
+    try:
+        import base64 as _b64
+        import io as _io
+
+        import pytesseract
+        from PIL import Image, ImageOps
+
+        orig = Image.open(_io.BytesIO(data)).convert("RGB")
+        g = ImageOps.grayscale(orig)
+        big = max(g.size) or 1
+        scale = 2000 / big if big < 2000 else 1.0
+        proc = (
+            g.resize((max(int(g.width * scale), 1), max(int(g.height * scale), 1)))
+            if scale != 1.0
+            else g
+        )
+        proc = ImageOps.autocontrast(proc)
+        hist = proc.histogram()
+        if sum(hist[:128]) > sum(hist[128:]):
+            proc = ImageOps.invert(proc)
+        data_dict = pytesseract.image_to_data(
+            proc, config="--psm 6", output_type=pytesseract.Output.DICT
+        )
+        groups: dict = {}
+        for i in range(len(data_dict["text"])):
+            if not (data_dict["text"][i] or "").strip():
+                continue
+            key = (data_dict["block_num"][i], data_dict["par_num"][i], data_dict["line_num"][i])
+            groups.setdefault(key, []).append(i)
+
+        merged: dict = {}
+        for idxs in groups.values():
+            line = " ".join(data_dict["text"][i] for i in idxs).strip()
+            parsed = _parse_stash_text(line)
+            if not parsed:
+                continue
+            cand = parsed[0]
+            x0 = min(data_dict["left"][i] for i in idxs) / scale
+            y0 = min(data_dict["top"][i] for i in idxs) / scale
+            y1 = max(data_dict["top"][i] + data_dict["height"][i] for i in idxs) / scale
+            th = max(y1 - y0, 12)
+            side = th * 2.2
+            if x0 - side > 0:  # icon usually sits to the left of the label…
+                box = (x0 - side, (y0 + y1) / 2 - side / 2, x0, (y0 + y1) / 2 + side / 2)
+            else:  # …or just above it in a grid
+                box = (x0, y0 - side, x0 + side, y0)
+            bx0, by0 = max(box[0], 0), max(box[1], 0)
+            bx1, by1 = min(box[2], orig.width), min(box[3], orig.height)
+            img_uri = ""
+            if bx1 - bx0 > 8 and by1 - by0 > 8:
+                try:
+                    crop = orig.crop((int(bx0), int(by0), int(bx1), int(by1))).resize((56, 56))
+                    buf = _io.BytesIO()
+                    crop.save(buf, "JPEG", quality=70)
+                    img_uri = "data:image/jpeg;base64," + _b64.b64encode(buf.getvalue()).decode()
+                except Exception:
+                    pass
+            slot = merged.setdefault(cand["item"], {"qty": 0, "image": ""})
+            slot["qty"] += cand["qty"]
+            if not slot["image"] and img_uri:
+                slot["image"] = img_uri
+        return [
+            {"item": k, "qty": v["qty"], "icon": _item_icon(k), "image": v["image"]}
+            for k, v in merged.items()
+        ]
+    except Exception as exc:
+        log.info("stash scan failed: %s", exc)
+        return []
+
+
 # ---- wars (read-only) ------------------------------------------------------- #
 
 def _wars_list(store: dict) -> list[dict]:
@@ -422,6 +549,37 @@ def _wars_list(store: dict) -> list[dict]:
             }
         )
     out.sort(key=lambda x: (not x["active"], -(x["wins"] + x["losses"])))
+    return out
+
+
+# ---- EOIs (read-only, pending only) ----------------------------------------- #
+
+def _eois_list(guild: "discord.Guild", store: dict) -> list[dict]:
+    """Applications still open for voting (ended ones are skipped), soonest to
+    close first."""
+    apps = store.get("eoi_apps", {})
+    timers = store.get("eoi_timers", {})
+    votes = store.get("eoi_votes", {})
+    out = []
+    for mid, app in apps.items():
+        t = timers.get(str(mid), {})
+        if t.get("done"):  # voting has ended — hide it
+            continue
+        v = votes.get(str(mid), {})
+        uid = app.get("user_id")
+        m = guild.get_member(uid) if uid else None
+        out.append(
+            {
+                "ign": app.get("ign", ""),
+                "role": app.get("role", ""),
+                "applicant": m.display_name if m is not None else (app.get("ign") or str(uid)),
+                "avatar": str(m.display_avatar.url) if m is not None else "",
+                "yes": sum(1 for x in v.values() if x == "yes"),
+                "no": sum(1 for x in v.values() if x == "no"),
+                "ends": t.get("ends"),
+            }
+        )
+    out.sort(key=lambda x: (x.get("ends") is None, x.get("ends") or 0))
     return out
 
 
@@ -836,7 +994,10 @@ async def _h_stash_set(request):
     if not ok:
         return _aioweb.json_response({"error": msg}, status=code)
     store = guild_store(DATA, guild.id)
-    result = _stash_upsert(store, body.get("item"), body.get("qty"), body.get("mode", "set"))
+    result = _stash_upsert(
+        store, body.get("item"), body.get("qty"), body.get("mode", "set"),
+        body.get("weight"), body.get("image"),
+    )
     return _aioweb.json_response(result, status=200 if result.get("ok") else 400)
 
 
@@ -882,8 +1043,7 @@ async def _h_stash_scan(request):
              "note": "The OCR engine (Tesseract) isn't installed on the server yet — "
                      "the next deploy adds it. You can still add items by hand."}
         )
-    text = _ocr_image(data)
-    cands = _parse_stash_text(text)
+    cands = _scan_stash(data)
     if not cands:
         return _aioweb.json_response(
             {"candidates": [], "ocr": True,
@@ -902,6 +1062,17 @@ async def _h_wars(request):
         return _aioweb.json_response({"error": msg}, status=code)
     store = guild_store(DATA, guild.id)
     return _aioweb.json_response({"wars": _wars_list(store)})
+
+
+async def _h_eois(request):
+    guild = _guild_from(request.query.get("guild"))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    return _aioweb.json_response({"eois": _eois_list(guild, store)})
 
 
 _web_started = False
@@ -944,6 +1115,7 @@ async def start_web_server() -> None:
             _aioweb.post("/api/stash_remove", _h_stash_remove),
             _aioweb.post("/api/stash_scan", _h_stash_scan),
             _aioweb.get("/api/wars", _h_wars),
+            _aioweb.get("/api/eois", _h_eois),
         ]
     )
     runner = _aioweb.AppRunner(app)
@@ -1027,11 +1199,19 @@ _PAGE_HTML = """
   input:focus,select:focus{border-color:rgba(244,63,94,.55);background:rgba(244,63,94,.06)}
   .muted{color:var(--mute)}
 
-  .gate{max-width:440px;margin:14vh auto;text-align:center;padding:30px 26px;border-radius:22px;
-    background:var(--card);border:1px solid var(--line);backdrop-filter:blur(14px);box-shadow:0 20px 60px rgba(0,0,0,.5)}
-  .gate .logo{margin:0 auto 14px;width:52px;height:52px;font-size:26px;border-radius:16px}
-  .gate h2{margin:0 0 6px;font-size:20px} .gate p{margin:0;color:var(--mute)}
-  #gateActions{margin-top:20px}
+  .gate{max-width:460px;margin:12vh auto;text-align:center;padding:40px 32px;border-radius:26px;
+    background:linear-gradient(180deg,rgba(32,20,27,.88),rgba(18,18,24,.82));border:1px solid var(--line);
+    backdrop-filter:blur(18px);box-shadow:0 30px 90px rgba(0,0,0,.6)}
+  .gate .gicon{width:76px;height:76px;margin:0 auto 20px;border-radius:22px;display:grid;place-items:center;font-size:38px;
+    background:linear-gradient(135deg,#2a0b16,#4c0f22);border:1px solid rgba(244,63,94,.45);box-shadow:0 0 40px rgba(225,29,72,.5)}
+  .gate h2{margin:0 0 8px;font-size:23px;font-weight:800}
+  .gate p{margin:0;color:var(--mute);line-height:1.6}
+  #gateActions{margin-top:24px}
+  #gateActions button{width:100%;padding:13px;font-size:15px}
+  .discordbtn{display:inline-flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:13px;
+    background:#5865f2;border:1px solid #5865f2;border-radius:13px;color:#fff;font-weight:700;font-size:15px;cursor:pointer;
+    box-shadow:0 12px 34px rgba(88,101,242,.45);transition:.16s}
+  .discordbtn:hover{filter:brightness(1.08);transform:translateY(-1px)}
 
   /* stat tiles */
   .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px;margin:4px 0 20px}
@@ -1106,6 +1286,15 @@ _PAGE_HTML = """
 
   .addbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
   .addbar .i{flex:1;min-width:150px}.addbar .q{width:92px}
+  .iconbox{width:42px;height:42px;flex:none;border-radius:11px;display:grid;place-items:center;font-size:21px;
+    background:rgba(255,255,255,.05);border:1px solid var(--line)}
+  .iconimg{width:42px;height:42px;flex:none;border-radius:11px;object-fit:cover;border:1px solid var(--line);
+    background:#000;image-rendering:auto}
+  .wchip{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--mute)}
+  .wi{width:60px;padding:3px 7px !important;border-radius:8px;font-size:11px;text-align:center}
+  .cand .thumb{width:36px;height:36px;flex:none;border-radius:8px;object-fit:cover;border:1px solid var(--line);background:#000}
+  .cand .temoji{width:36px;height:36px;flex:none;border-radius:8px;display:grid;place-items:center;
+    background:rgba(255,255,255,.05);border:1px solid var(--line);font-size:18px}
   .drop{border:2px dashed var(--line);border-radius:16px;padding:22px;text-align:center;cursor:pointer;
     transition:.18s;background:rgba(255,255,255,.02);margin-bottom:14px}
   .drop:hover,.drop.over{border-color:rgba(244,63,94,.6);background:rgba(244,63,94,.07)}
@@ -1154,6 +1343,7 @@ _PAGE_HTML = """
     <div class="tab" data-tab="kos" onclick="setTab('kos')">💀 KOS</div>
     <div class="tab" data-tab="stash" onclick="setTab('stash')">📦 Stash</div>
     <div class="tab" data-tab="wars" onclick="setTab('wars')">⚔️ Wars</div>
+    <div class="tab" data-tab="eois" onclick="setTab('eois')">📨 EOIs</div>
   </div>
 
   <div class="toolbar">
@@ -1166,6 +1356,7 @@ _PAGE_HTML = """
   <div id="kosView" style="display:none"></div>
   <div id="stashView" style="display:none"></div>
   <div id="warsView" style="display:none"></div>
+  <div id="eoisView" style="display:none"></div>
 </div>
 
 <footer>Only people with the website-access role can open this · changes apply to Discord live · 天使</footer>
@@ -1186,19 +1377,23 @@ async function api(path,opts){
   if(!r.ok) throw Object.assign(new Error(d.error||("HTTP "+r.status)),{status:r.status});
   return d;
 }
-function gate(title,text,actions){
+const DSVG='<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" style="flex:none"><path d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.2.5c1.7.4 3.1 1 4.3 1.6a13 13 0 0 0-11 0C9.6 4.4 11 3.9 12.6 3.5L12.4 3a19.8 19.8 0 0 0-5 1.4C4 8.3 3.2 12.1 3.5 15.8a19.9 19.9 0 0 0 6 3l.8-1.1c-.7-.3-1.4-.6-2-1l.5-.4a14.2 14.2 0 0 0 12 0l.5.4c-.6.4-1.3.7-2 1l.8 1.1a19.9 19.9 0 0 0 6-3c.4-4.3-.7-8.1-3.5-11.4ZM9.3 13.8c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Zm5.4 0c-1 0-1.8-.9-1.8-2s.8-2 1.8-2 1.8.9 1.8 2-.8 2-1.8 2Z"/></svg>';
+function gate(icon,title,text,actions){
   show("app",false);show("gate",true);$("logoutBtn").style.display="none";
-  $("gateTitle").textContent=title;$("gateText").textContent=text;$("gateActions").innerHTML=actions||"";
+  if(window.__recheck){clearInterval(window.__recheck);window.__recheck=null;}
+  $("gate").innerHTML=`<div class="gicon">${icon}</div><h2>${h(title)}</h2><p class="muted">${h(text)}</p><div id="gateActions">${actions||""}</div>`;
 }
 async function boot(){
-  let me;try{me=await api("/api/me");}catch(e){gate("Error","Couldn't reach the server. Try again.");return;}
+  let me;try{me=await api("/api/me");}catch(e){gate("⚠️","Can't connect","Couldn't reach the server — try again.","<button onclick='boot()'>Retry</button>");return;}
   if(!me.authed){
-    if(me.reason==="not_configured") gate("Not set up","The owner still needs to set DISCORD_CLIENT_SECRET and a Website access role.");
-    else if(me.reason==="no_access") gate("No access","Your account doesn't have the website-access role. Ask leadership for it.",'<a href="/logout"><button>Log out</button></a>');
-    else gate("Sign in","Log in with Discord to manage the roster.",'<a href="/login"><button class="brand-btn" style="width:100%;padding:12px">Log in with Discord</button></a>');
+    if(me.reason==="not_configured") gate("⚙️","Setup needed","The owner still needs to set DISCORD_CLIENT_SECRET and a Website access role before anyone can log in.");
+    else if(me.reason==="no_access") gate("🚫","No access","You don't have the website-access role yet. Ask leadership to give it to you, then reload this page.",'<a href="/logout"><button>Log out</button></a>');
+    else gate("🐉","Tenshi Roster","Log in with Discord to manage the roster, stash, KOS and more.",'<a href="/login"><button class="discordbtn">'+DSVG+' Log in with Discord</button></a>');
     return;
   }
   show("gate",false);show("app",true);$("logoutBtn").style.display="";
+  if(window.__recheck)clearInterval(window.__recheck);
+  window.__recheck=setInterval(async()=>{try{const m=await api("/api/me");if(!m.authed){clearInterval(window.__recheck);window.__recheck=null;boot();}}catch(e){}},45000);
   const sel=$("guildSel");
   sel.innerHTML=me.guilds.map(x=>`<option value="${h(x.id)}">${h(x.name)}</option>`).join("");
   show("guildRow",me.guilds.length>1);
@@ -1209,10 +1404,10 @@ async function reload(){
   const sel=$("guildSel");if(sel&&sel.value)STATE.guild=sel.value;
   const g=encodeURIComponent(STATE.guild);
   try{
-    const [ov,ro,ko,stn,wa]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g),api("/api/stash?guild="+g),api("/api/wars?guild="+g)]);
+    const [ov,ro,ko,stn,wa,eo]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g),api("/api/stash?guild="+g),api("/api/wars?guild="+g),api("/api/eois?guild="+g)]);
     $("sub").textContent=ro.guild?.name||"Roster";
     renderStats(ov.overview);
-    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];STATE.stash=stn.items||[];STATE.stashTotal=stn.total||0;STATE.wars=wa.wars||[];
+    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];STATE.stash=stn.items||[];STATE.stashTotal=stn.total||0;STATE.wars=wa.wars||[];STATE.eois=eo.eois||[];
     render();
   }catch(e){ if(e.status===401||e.status===403) return boot(); toast(e.message||"Failed to load.","err"); }
 }
@@ -1222,7 +1417,7 @@ function countUp(el,to){
   (function step(t){const p=Math.min((t-t0)/dur,1);el.textContent=Math.round(to*(1-Math.pow(1-p,3)));if(p<1)requestAnimationFrame(step);})(t0);
 }
 function renderStats(o){
-  const tiles=[["ranked","Ranked","🎯","brand"],["kos","On KOS","💀","bad"],["open_eois","Open EOIs","📨","warn"],
+  const tiles=[["ranked","Ranked","🎯","brand"],["kos","On KOS","💀","bad"],["open_eois","Pending EOIs","📨","warn"],
     ["strikes_30d","Strikes 30d","⚠️","warn"],["wars","Wars","⚔️","blue"],["members","In server","👥","ok"]];
   $("stats").innerHTML=tiles.map(([k,l,ic,c],i)=>`<div class="stat ${c}" style="animation-delay:${i*45}ms"><span class="ic">${ic}</span><div class="n" data-c="${h(String(o[k]??'—'))}">0</div><div class="l">${l}</div></div>`).join("")
     +`<div class="stat purple" style="animation-delay:270ms"><span class="ic">📻</span><div class="n" style="font-size:17px">${h(o.radio||'—')}</div><div class="l">Radio</div></div>`;
@@ -1230,10 +1425,10 @@ function renderStats(o){
 }
 function setTab(t){
   TAB=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===t));
-  ["roster","kos","stash","wars"].forEach(v=>show(v+"View",t===v));
-  $("search").placeholder={roster:"Search members…",kos:"Search KOS…",stash:"Search items…",wars:"Wars"}[t]||"Search…";render();
+  ["roster","kos","stash","wars","eois"].forEach(v=>show(v+"View",t===v));
+  $("search").placeholder={roster:"Search members…",kos:"Search KOS…",stash:"Search items…",wars:"Wars",eois:"Pending applications"}[t]||"Search…";render();
 }
-function render(){({roster:renderRoster,kos:renderKos,stash:renderStash,wars:renderWars}[TAB]||renderRoster)();}
+function render(){({roster:renderRoster,kos:renderKos,stash:renderStash,wars:renderWars,eois:renderEois}[TAB]||renderRoster)();}
 function renderRoster(){
   const q=$("search").value.toLowerCase();
   let ms=STATE.members.filter(m=>m.name.toLowerCase().includes(q)||(m.rank||"").toLowerCase().includes(q));
@@ -1297,31 +1492,41 @@ async function removeKos(uid,name){
 
 function renderStash(){
   const q=$("search").value.toLowerCase();
-  const items=(STATE.stash||[]).filter(i=>i.item.toLowerCase().includes(q));
-  $("count").textContent=(STATE.stash||[]).length+" items · "+(STATE.stashTotal||0)+" total";
-  const add=`<div class="addbar"><input class="i" id="si" placeholder="Item name" onkeydown="if(event.key==='Enter')stashAdd()"><input class="q" id="sq" type="number" placeholder="Qty" value="1"><button class="brand-btn" onclick="stashAdd()">Add</button></div>`;
-  const drop=`<div class="drop" id="drop" onclick="$('file').click()"><div>📸 <b>Drop a stash screenshot</b> or click to upload</div><small class="muted">Reads the item text with OCR — you confirm before anything is added</small><input id="file" type="file" accept="image/*" hidden></div><div id="cands" class="card" style="display:none;padding:14px;margin-bottom:14px"></div>`;
+  const all=STATE.stash||[];
+  const items=all.filter(i=>i.item.toLowerCase().includes(q));
+  const totQ=all.reduce((a,i)=>a+(i.qty||0),0);
+  const totW=all.reduce((a,i)=>a+(i.qty||0)*(i.weight||0),0);
+  $("count").textContent=all.length+" items · "+totQ+" total"+(totW>0?" · "+(Math.round(totW*10)/10)+" kg":"");
+  const add=`<div class="addbar"><input class="i" id="si" placeholder="Item name" onkeydown="if(event.key==='Enter')stashAdd()"><input class="q" id="sq" type="number" placeholder="Qty" value="1"><input class="q" id="sw" type="number" step="0.1" placeholder="kg ea"><button class="brand-btn" onclick="stashAdd()">Add</button></div>`;
+  const drop=`<div class="drop" id="drop" onclick="$('file').click()"><div>📸 <b>Drop a stash screenshot</b> or click to upload</div><small class="muted">Reads item names + counts with OCR (weight bar ignored) — you confirm before anything is added</small><input id="file" type="file" accept="image/*" hidden></div><div id="cands" class="card" style="display:none;padding:14px;margin-bottom:14px"></div>`;
   const list=items.length?`<ul class="members" style="gap:8px">`+items.map(stashRow).join("")+`</ul>`:`<div class="empty">Stash is empty — add an item or scan a screenshot.</div>`;
   $("stashView").innerHTML=add+drop+list;wireDrop();
 }
-function stashRow(i){return `<li class="sitem"><div class="grow"><div class="mname">${h(i.item)}</div></div><div class="q"><button onclick="stashDelta('${h(i.item)}',-1)">−</button><span class="qn">${i.qty}</span><button onclick="stashDelta('${h(i.item)}',1)">+</button></div><button class="danger" onclick="stashRemove('${h(i.item)}')">✕</button></li>`;}
+function stashRow(i){
+  return `<li class="sitem">${i.image?`<img class="iconimg" src="${i.image}" alt="">`:`<div class="iconbox">${i.icon||"📦"}</div>`}<div class="grow"><div class="mname">${h(i.item)}</div>
+    <div class="chips"><span class="wchip">⚖ <input class="wi" type="number" step="0.1" value="${i.weight||0}" title="Weight each (kg)" onchange="stashWeight('${h(i.item)}',this.value)"> kg ea${i.weight>0?` · ${Math.round(i.qty*i.weight*10)/10} kg total`:""}</span></div></div>
+    <div class="q"><button onclick="stashDelta('${h(i.item)}',-1)">−</button><span class="qn">${i.qty}</span><button onclick="stashDelta('${h(i.item)}',1)">+</button></div>
+    <button class="danger" onclick="stashRemove('${h(i.item)}')">✕</button></li>`;
+}
+async function stashWeight(item,w){try{await post("/api/stash",{guild:STATE.guild,item,qty:0,mode:"add",weight:w});await reload();}catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
 function wireDrop(){const d=$("drop"),f=$("file");if(!d)return;f.onchange=()=>{if(f.files[0])scanFile(f.files[0]);};d.ondragover=e=>{e.preventDefault();d.classList.add("over");};d.ondragleave=()=>d.classList.remove("over");d.ondrop=e=>{e.preventDefault();d.classList.remove("over");if(e.dataTransfer.files[0])scanFile(e.dataTransfer.files[0]);};}
 async function scanFile(file){toast("Scanning screenshot…");const fd=new FormData();fd.append("image",file);
   try{const r=await fetch("/api/stash_scan?guild="+encodeURIComponent(STATE.guild),{method:"POST",body:fd});const d=await r.json();
     if(!r.ok)throw new Error(d.error||"Scan failed");
     if(!d.candidates||!d.candidates.length){toast(d.note||"Couldn't read any items from that image.","err");return;}
     renderCandidates(d.candidates);}catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Scan failed","err");}}
-function renderCandidates(c){const el=$("cands");el.style.display="";
-  el.innerHTML=`<div style="font-weight:700;margin-bottom:10px">Found ${c.length} — tick what to add, fix anything, then confirm</div>`
-    +c.map((x,i)=>`<div class="cand"><input type="checkbox" checked id="c${i}"><input class="ci" id="ci${i}" value="${h(x.item)}"><input class="cq" id="cq${i}" type="number" value="${x.qty}"></div>`).join("")
+function renderCandidates(c){const el=$("cands");el.style.display="";window.__cimg=c.map(x=>x.image||"");
+  el.innerHTML=`<div style="font-weight:700;margin-bottom:10px">Found ${c.length} — tick what to add, fix names/qty/weight, then confirm</div>`
+    +c.map((x,i)=>`<div class="cand"><input type="checkbox" checked id="c${i}">${x.image?`<img class="thumb" src="${x.image}">`:`<div class="temoji">${x.icon||"📦"}</div>`}<input class="ci" id="ci${i}" value="${h(x.item)}" title="Item"><input class="cq" id="cq${i}" type="number" value="${x.qty}" title="Qty"><input class="cq" id="cw${i}" type="number" step="0.1" placeholder="kg" title="Weight each"></div>`).join("")
     +`<div style="margin-top:12px;display:flex;gap:8px"><button class="brand-btn" onclick="addCandidates(${c.length})">Add to stash</button><button onclick="$('cands').style.display='none'">Cancel</button></div>`;}
 async function addCandidates(n){let added=0;
   for(let i=0;i<n;i++){const cb=$("c"+i);if(!cb||!cb.checked)continue;const item=$("ci"+i).value.trim(),qty=$("cq"+i).value;if(!item)continue;
-    try{await post("/api/stash",{guild:STATE.guild,item,qty,mode:"add"});added++;}catch(e){}}
+    const weight=($("cw"+i)||{}).value||"";const image=(window.__cimg||[])[i]||"";
+    try{await post("/api/stash",{guild:STATE.guild,item,qty,weight,image,mode:"add"});added++;}catch(e){}}
   const el=$("cands");if(el)el.style.display="none";toast("Added "+added+" item"+(added===1?"":"s")+" to the stash","ok");await reload();}
-async function stashAdd(){const item=($("si")||{}).value?.trim(),qty=($("sq")||{}).value||1;
+async function stashAdd(){const item=($("si")||{}).value?.trim(),qty=($("sq")||{}).value||1,weight=($("sw")||{}).value||"";
   if(!item){toast("Enter an item name","err");return;}
-  try{await post("/api/stash",{guild:STATE.guild,item,qty,mode:"add"});toast("Added "+item,"ok");await reload();}
+  try{await post("/api/stash",{guild:STATE.guild,item,qty,weight,mode:"add"});toast("Added "+item,"ok");await reload();}
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
 async function stashDelta(item,d){try{await post("/api/stash",{guild:STATE.guild,item,qty:d,mode:"add"});await reload();}
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
@@ -1332,6 +1537,11 @@ function renderWars(){const ws=STATE.wars||[];$("count").textContent=ws.length+"
   $("warsView").innerHTML=`<ul class="members" style="gap:9px">`+ws.map(w=>{
     const col=w.wins>w.losses?"var(--ok)":w.losses>w.wins?"var(--bad)":"var(--mute)";
     return `<li class="warcard"><div class="grow"><div class="mname">vs ${h(w.enemy)}</div><div class="muted" style="font-size:12px">${w.active?"In progress":"Ended"}${w.first_to?" · first to "+w.first_to:""}</div></div><span class="badge ${w.active?'live':'done'}">${w.active?'Live':'Done'}</span><div class="score" style="color:${col}">${w.wins} – ${w.losses}</div></li>`;}).join("")+`</ul>`;}
+function renderEois(){const es=STATE.eois||[];$("count").textContent=es.length+" pending";
+  if(!es.length){$("eoisView").innerHTML=`<div class="empty">No pending applications. 🎉</div>`;return;}
+  $("eoisView").innerHTML=`<ul class="members" style="gap:9px">`+es.map(e=>`<li class="member">${e.avatar?`<div class="av"><img src="${h(e.avatar)}" alt=""></div>`:`<div class="av skull" style="background:linear-gradient(135deg,#1a2033,#243154)">📨</div>`}<div class="grow"><div class="mname">${h(e.ign||e.applicant||"Applicant")}</div><div class="muted" style="font-size:12px">${h(e.role||"—")}${e.applicant&&e.applicant!==e.ign?" · "+h(e.applicant):""}</div></div><div style="display:flex;gap:7px;align-items:center">${e.ends?`<span class="badge done" data-ts="${e.ends}"></span>`:""}<span class="badge" style="background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)">✅ ${e.yes}</span><span class="badge" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.4)">❌ ${e.no}</span></div></li>`).join("")+`</ul>`;
+  document.querySelectorAll('#eoisView [data-ts]').forEach(el=>{const t=+el.dataset.ts,sec=t-Math.floor(Date.now()/1000);el.textContent=sec<=0?"closing":"closes "+(sec>86400?Math.round(sec/86400)+"d":sec>3600?Math.round(sec/3600)+"h":Math.max(Math.round(sec/60),1)+"m");});
+}
 boot();
 </script>
 </body>
