@@ -1028,17 +1028,20 @@ class EOIModal(discord.ui.Modal, title="Join the Gang — Expression of Interest
 
 # ---- EOI voting timer ------------------------------------------------------- #
 
-async def _close_eoi(guild: discord.Guild, store: dict[str, Any], mid: int, rec: dict) -> None:
+async def _close_eoi(
+    guild: discord.Guild, store: dict[str, Any], mid: int, rec: dict, force: str | None = None
+) -> None:
     """Tally votes, lock the EOI post, and — if it passed — welcome them into
     the gang in the EOI channel (+ roster role). Denials are quiet: post is
-    marked and the applicant gets a DM."""
+    marked and the applicant gets a DM. `force` overrides the vote result:
+    "accept" always passes, "deny" always fails."""
     ch = guild.get_channel(rec.get("channel_id") or 0)
     if ch is None:
         return
     votes = store.get("eoi_votes", {}).get(str(mid), {})
     yes = sum(1 for v in votes.values() if v == "yes")
     no = sum(1 for v in votes.values() if v == "no")
-    passed = yes > no
+    passed = True if force == "accept" else False if force == "deny" else yes > no
     app = store.get("eoi_apps", {}).get(str(mid), {})
     uid = app.get("user_id")
     now = int(datetime.datetime.now(datetime.timezone.utc).timestamp())

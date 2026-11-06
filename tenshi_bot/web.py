@@ -462,30 +462,50 @@ def _ocr_image(data: bytes) -> str:
         return ""
 
 
-def _trim_bg(img):
-    """Make the slot background transparent and crop to the icon content. The
-    background colour is taken from the corners; pixels close to it become
-    transparent, and the result is cropped to what's left."""
+def _trim_bg(img, tol: int = 96):
+    """Fully knock the slot background out to transparent, then crop tight to the
+    icon that's left.
+
+    The background colour is estimated from the *whole border ring* (its median,
+    so a stray bright pixel can't throw it off), and every pixel close to that
+    colour anywhere in the image is made transparent — not just the ones touching
+    an edge — so interior patches of background go too. Near-black slot shading is
+    also dropped. What survives is cropped to its bounding box. Best-effort: on a
+    busy or gradient background it won't be pixel-perfect."""
     from PIL import Image
 
     rgba = img.convert("RGBA")
-    if max(rgba.size) > 120:
-        rgba.thumbnail((120, 120))
+    if max(rgba.size) > 160:
+        rgba.thumbnail((160, 160), Image.LANCZOS)
     px = rgba.load()
     w, h = rgba.size
-    corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
-    br = sum(c[0] for c in corners) // 4
-    bg = sum(c[1] for c in corners) // 4
-    bb = sum(c[2] for c in corners) // 4
+    if w < 2 or h < 2:
+        return rgba
+
+    # background colour = median of the 1px border ring
+    ring = []
+    for x in range(w):
+        ring.append(px[x, 0]); ring.append(px[x, h - 1])
+    for y in range(h):
+        ring.append(px[0, y]); ring.append(px[w - 1, y])
+    n = len(ring)
+    br = sorted(c[0] for c in ring)[n // 2]
+    bg = sorted(c[1] for c in ring)[n // 2]
+    bb = sorted(c[2] for c in ring)[n // 2]
+
     minx, miny, maxx, maxy = w, h, 0, 0
     for y in range(h):
         for x in range(w):
             r, g, b, _ = px[x, y]
-            if abs(r - br) + abs(g - bg) + abs(b - bb) < 120:
+            near_bg = abs(r - br) + abs(g - bg) + abs(b - bb) < tol
+            dark_slot = max(r, g, b) < 50 and (max(r, g, b) - min(r, g, b)) < 22
+            if near_bg or dark_slot:
                 px[x, y] = (r, g, b, 0)
             else:
-                minx, miny = min(minx, x), min(miny, y)
-                maxx, maxy = max(maxx, x), max(maxy, y)
+                if x < minx: minx = x
+                if y < miny: miny = y
+                if x > maxx: maxx = x
+                if y > maxy: maxy = y
     if maxx <= minx or maxy <= miny:
         return rgba  # all background — leave as-is
     return rgba.crop((minx, miny, maxx + 1, maxy + 1))
@@ -574,16 +594,27 @@ def _scan_stash(data: bytes) -> list[dict]:
             y0 = min(w["y"] for w in ws) / scale
             x1 = max(w["x"] + w["w"] for w in ws) / scale
             y1 = max(w["y"] + w["h"] for w in ws) / scale
-            # crop the slot: a square around the cluster, cut the background out
-            side = max(x1 - x0, y1 - y0) * 1.7
-            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-            bx0, by0 = max(cx - side / 2, 0), max(cy - side / 2, 0)
-            bx1, by1 = min(cx + side / 2, orig.width), min(cy + side / 2, orig.height)
+            # The item image sits in the slot ABOVE its label, so crop the square
+            # directly above the text cluster (never the text itself) and cut the
+            # background out of it. Falls back to a slot-sized square if the icon
+            # zone would fall off the top edge.
+            cx = (x0 + x1) / 2
+            side = max(x1 - x0, 24.0)
+            gap = side * 0.10
+            iy1 = y0 - gap            # bottom of icon = just above the label
+            iy0 = iy1 - side          # one slot-height up
+            if iy0 < 0:               # label near the top — fall back around it
+                cyf = (y0 + y1) / 2
+                iy0, iy1 = max(cyf - side / 2, 0), cyf + side / 2
+            bx0 = max(cx - side / 2, 0)
+            bx1 = min(cx + side / 2, orig.width)
+            by0 = max(iy0, 0)
+            by1 = min(iy1, orig.height)
             img_uri = ""
             if bx1 - bx0 > 8 and by1 - by0 > 8:
                 try:
                     crop = _trim_bg(orig.crop((int(bx0), int(by0), int(bx1), int(by1))))
-                    crop = crop.resize((56, 56))
+                    crop = crop.resize((64, 64), Image.LANCZOS)
                     buf = _io.BytesIO()
                     crop.save(buf, "PNG")
                     img_uri = "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode()
@@ -1144,7 +1175,10 @@ async def _h_eois(request):
     return _aioweb.json_response({"eois": _eois_list(guild, store)})
 
 
-async def _h_eoi_close(request):
+async def _web_end_eoi(request, force: str | None):
+    """Shared force-end for the web: tally+close (force=None), force-accept
+    (force='accept') or force-deny (force='deny'). Always drops the EOI off the
+    pending list, falling back to the configured EOI channel for older apps."""
     try:
         body = await request.json()
     except Exception:
@@ -1159,23 +1193,27 @@ async def _h_eoi_close(request):
     store = guild_store(DATA, guild.id)
     if mid not in store.get("eoi_apps", {}):
         return _aioweb.json_response({"error": "That application no longer exists."}, status=404)
-    # Force close: work from whatever we have. Fall back to the configured EOI
-    # channel when the timer has none on record (older applications).
     rec = dict(store.get("eoi_timers", {}).get(mid) or {})
     if not rec.get("channel_id"):
         rec["channel_id"] = store.get("eoi_channel_id")
-    # Always mark it ended and drop it off the pending list, even if the post is
-    # gone or can't be edited.
     timer = store.setdefault("eoi_timers", {}).setdefault(mid, {})
     timer["done"] = True
     if rec.get("channel_id"):
         timer["channel_id"] = rec["channel_id"]
     save_data(DATA)
     try:
-        await _close_eoi(guild, store, int(mid), rec)
+        await _close_eoi(guild, store, int(mid), rec, force=force)
     except (discord.HTTPException, ValueError) as exc:
-        log.info("web EOI force-close: couldn't edit the post (%s)", exc)
+        log.info("web EOI end (force=%s): couldn't edit the post (%s)", force, exc)
     return _aioweb.json_response({"ok": True})
+
+
+async def _h_eoi_close(request):
+    return await _web_end_eoi(request, None)
+
+
+async def _h_eoi_accept(request):
+    return await _web_end_eoi(request, "accept")
 
 
 _web_started = False
@@ -1220,6 +1258,7 @@ async def start_web_server() -> None:
             _aioweb.get("/api/wars", _h_wars),
             _aioweb.get("/api/eois", _h_eois),
             _aioweb.post("/api/eoi_close", _h_eoi_close),
+            _aioweb.post("/api/eoi_accept", _h_eoi_accept),
         ]
     )
     runner = _aioweb.AppRunner(app)
@@ -1643,12 +1682,17 @@ function renderWars(){const ws=STATE.wars||[];$("count").textContent=ws.length+"
     return `<li class="warcard"><div class="grow"><div class="mname">vs ${h(w.enemy)}</div><div class="muted" style="font-size:12px">${w.active?"In progress":"Ended"}${w.first_to?" · first to "+w.first_to:""}</div></div><span class="badge ${w.active?'live':'done'}">${w.active?'Live':'Done'}</span><div class="score" style="color:${col}">${w.wins} – ${w.losses}</div></li>`;}).join("")+`</ul>`;}
 function renderEois(){const es=STATE.eois||[];$("count").textContent=es.length+" pending";
   if(!es.length){$("eoisView").innerHTML=`<div class="empty">No pending applications. 🎉</div>`;return;}
-  $("eoisView").innerHTML=`<ul class="members" style="gap:9px">`+es.map(e=>`<li class="member">${e.avatar?`<div class="av"><img src="${h(e.avatar)}" alt=""></div>`:`<div class="av skull" style="background:linear-gradient(135deg,#1a2033,#243154)">📨</div>`}<div class="grow"><div class="mname">${h(e.ign||e.applicant||"Applicant")}</div><div class="muted" style="font-size:12px">${h(e.role||"—")}${e.applicant&&e.applicant!==e.ign?" · "+h(e.applicant):""}</div></div><div style="display:flex;gap:7px;align-items:center">${e.ends?`<span class="badge done" data-ts="${e.ends}"></span>`:""}<span class="badge" style="background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)">✅ ${e.yes}</span><span class="badge" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.4)">❌ ${e.no}</span><button class="danger" style="padding:6px 11px" onclick="closeEoi('${h(e.id)}','${h(e.ign||e.applicant||"this")}')">Close</button></div></li>`).join("")+`</ul>`;
+  $("eoisView").innerHTML=`<ul class="members" style="gap:9px">`+es.map(e=>`<li class="member">${e.avatar?`<div class="av"><img src="${h(e.avatar)}" alt=""></div>`:`<div class="av skull" style="background:linear-gradient(135deg,#1a2033,#243154)">📨</div>`}<div class="grow"><div class="mname">${h(e.ign||e.applicant||"Applicant")}</div><div class="muted" style="font-size:12px">${h(e.role||"—")}${e.applicant&&e.applicant!==e.ign?" · "+h(e.applicant):""}</div></div><div style="display:flex;gap:7px;align-items:center">${e.ends?`<span class="badge done" data-ts="${e.ends}"></span>`:""}<span class="badge" style="background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)">✅ ${e.yes}</span><span class="badge" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.4)">❌ ${e.no}</span><button style="padding:6px 11px;background:linear-gradient(135deg,#16a34a,#15803d);border:none;color:#fff;font-weight:700;border-radius:11px;cursor:pointer" onclick="acceptEoi('${h(e.id)}','${h(e.ign||e.applicant||"this")}')">Accept</button><button class="danger" style="padding:6px 11px" onclick="closeEoi('${h(e.id)}','${h(e.ign||e.applicant||"this")}')">Close</button></div></li>`).join("")+`</ul>`;
   document.querySelectorAll('#eoisView [data-ts]').forEach(el=>{const t=+el.dataset.ts,sec=t-Math.floor(Date.now()/1000);el.textContent=sec<=0?"closing":"closes "+(sec>86400?Math.round(sec/86400)+"d":sec>3600?Math.round(sec/3600)+"h":Math.max(Math.round(sec/60),1)+"m");});
 }
 async function closeEoi(id,name){
   if(!confirm("Close voting for "+name+"'s application now? Votes are tallied and the post locks."))return;
   try{await post("/api/eoi_close",{guild:STATE.guild,msg_id:id});toast("Closed "+name+"'s EOI","ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
+}
+async function acceptEoi(id,name){
+  if(!confirm("Force-accept "+name+"? They'll be welcomed and given the roster role regardless of the votes."))return;
+  try{await post("/api/eoi_accept",{guild:STATE.guild,msg_id:id});toast("Accepted "+name,"ok");await reload();}
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 boot();
