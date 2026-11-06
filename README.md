@@ -117,8 +117,16 @@ A browser page, served by the bot itself, that mirrors a lot of the bot. It's
   bot show a 🔒 and can't be touched.
 - **KOS tab** — the KOS list with reasons, and **Take off KOS** (removes the KOS
   role + list entry).
+- **Stash tab** — a gang inventory: add/±/remove items, and a **screenshot
+  scanner** — drop a stash screenshot and it OCRs the item text (names +
+  quantities), shows you the candidates to confirm/edit, then adds them.
+- **Wars tab** — read-only list of active/past wars with live scores.
 
 Every change applies to Discord live.
+
+The screenshot scanner needs the **Tesseract** OCR engine; `nixpacks.toml`
+installs it on Railway automatically. Without it, scanning just reports
+"couldn't read any items" and manual entry still works.
 
 Access is gated by a dedicated **Website access role** (separate from
 leadership): people log in with Discord, and only those holding that role can

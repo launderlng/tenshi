@@ -19,6 +19,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import time
 
@@ -274,6 +275,129 @@ async def _remove_kos(guild, store, user_id: int) -> dict:
         "role_removed": role_removed,
         "member": None if member is None else member.display_name,
     }
+
+
+# ---- stash (gang inventory) ------------------------------------------------- #
+
+def _stash_items(store: dict) -> list[dict]:
+    out = [
+        {"item": s.get("item", ""), "qty": int(s.get("qty", 0))}
+        for s in store.get("stash", [])
+        if s.get("item")
+    ]
+    out.sort(key=lambda x: x["item"].lower())
+    return out
+
+
+def _stash_upsert(store: dict, item: str, qty, mode: str = "set") -> dict:
+    """Add/set an item in the stash. mode 'add' increments, 'set' replaces.
+    Items that drop to 0 or below are removed."""
+    item = (item or "").strip()
+    if not item:
+        return {"ok": False, "error": "Item name is required."}
+    try:
+        qty = int(qty)
+    except (TypeError, ValueError):
+        return {"ok": False, "error": "Quantity must be a whole number."}
+    stash = store.setdefault("stash", [])
+    hit = None
+    for s in stash:
+        if s.get("item", "").strip().lower() == item.lower():
+            hit = s
+            break
+    if hit is None:
+        hit = {"item": item, "qty": 0}
+        stash.append(hit)
+    hit["qty"] = (int(hit.get("qty", 0)) + qty) if mode == "add" else qty
+    store["stash"] = [s for s in stash if int(s.get("qty", 0)) > 0]
+    save_data(DATA)
+    return {"ok": True, "item": item, "qty": max(int(hit["qty"]), 0)}
+
+
+def _stash_remove(store: dict, item: str) -> dict:
+    key = (item or "").strip().lower()
+    before = len(store.get("stash", []))
+    store["stash"] = [
+        s for s in store.get("stash", []) if s.get("item", "").strip().lower() != key
+    ]
+    save_data(DATA)
+    return {"ok": len(store["stash"]) != before}
+
+
+_STASH_SKIP = {
+    "inventory", "stash", "trunk", "weight", "items", "item", "qty", "quantity",
+    "glovebox", "pocket", "pockets", "name", "amount", "total", "search",
+}
+
+
+def _parse_stash_text(text: str) -> list[dict]:
+    """Best-effort: turn OCR'd lines into {item, qty} candidates. Imperfect — the
+    page shows these for the user to confirm, never auto-saved."""
+    out = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        qty = 1
+        m = (
+            re.search(r"x\s*(\d{1,6})\b", line, re.I)
+            or re.search(r"\b(\d{1,6})\s*x\b", line, re.I)
+            or re.search(r"\b(\d{1,6})\b", line)
+        )
+        if m:
+            qty = int(m.group(1))
+        name = re.sub(r"\b\d{1,6}\s*x\b|\bx\s*\d{1,6}\b|\b\d{1,6}\b", " ", line, flags=re.I)
+        name = re.sub(r"[^A-Za-z0-9 \-'&]", " ", name)
+        name = re.sub(r"\s+", " ", name).strip()
+        if len(name) < 2 or name.lower() in _STASH_SKIP:
+            continue
+        if not re.search(r"[A-Za-z]", name):
+            continue
+        out.append({"item": name.title(), "qty": qty})
+    # merge duplicates
+    merged: dict[str, int] = {}
+    for c in out:
+        merged[c["item"]] = merged.get(c["item"], 0) + c["qty"]
+    return [{"item": k, "qty": v} for k, v in merged.items()]
+
+
+def _ocr_image(data: bytes) -> str:
+    """OCR an uploaded screenshot. Returns '' if OCR tooling isn't available."""
+    try:
+        import io as _io
+
+        import pytesseract
+        from PIL import Image, ImageOps
+
+        img = Image.open(_io.BytesIO(data)).convert("RGB")
+        g = ImageOps.grayscale(img)
+        big = max(g.size) or 1
+        if big < 1500:
+            scale = 1500 / big
+            g = g.resize((max(int(g.width * scale), 1), max(int(g.height * scale), 1)))
+        g = ImageOps.autocontrast(g)
+        return pytesseract.image_to_string(g)
+    except Exception as exc:  # tesseract missing, bad image, etc.
+        log.info("OCR unavailable/failed: %s", exc)
+        return ""
+
+
+# ---- wars (read-only) ------------------------------------------------------- #
+
+def _wars_list(store: dict) -> list[dict]:
+    out = []
+    for w in store.get("wars", []):
+        out.append(
+            {
+                "enemy": w.get("enemy", "?"),
+                "wins": int(w.get("wins", 0)),
+                "losses": int(w.get("losses", 0)),
+                "active": bool(w.get("active", True)),
+                "first_to": w.get("first_to"),
+            }
+        )
+    out.sort(key=lambda x: (not x["active"], -(x["wins"] + x["losses"])))
+    return out
 
 
 async def _remove_from_roster(
@@ -663,6 +787,92 @@ async def _h_remove(request):
     return _aioweb.json_response(result)
 
 
+async def _h_stash(request):
+    guild = _guild_from(request.query.get("guild"))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    items = _stash_items(store)
+    return _aioweb.json_response({"items": items, "total": sum(i["qty"] for i in items)})
+
+
+async def _h_stash_set(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    result = _stash_upsert(store, body.get("item"), body.get("qty"), body.get("mode", "set"))
+    return _aioweb.json_response(result, status=200 if result.get("ok") else 400)
+
+
+async def _h_stash_remove(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    return _aioweb.json_response(_stash_remove(store, body.get("item")))
+
+
+async def _h_stash_scan(request):
+    guild = _guild_from(request.query.get("guild"))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    try:
+        post = await request.post()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad upload."}, status=400)
+    field = post.get("image")
+    data = None
+    if field is not None:
+        data = field.file.read() if hasattr(field, "file") else (
+            bytes(field) if isinstance(field, (bytes, bytearray)) else None
+        )
+    if not data:
+        return _aioweb.json_response({"error": "No image uploaded."}, status=400)
+    if len(data) > 12 * 1024 * 1024:
+        return _aioweb.json_response({"error": "Image too big (max 12 MB)."}, status=400)
+    text = _ocr_image(data)
+    if not text.strip():
+        return _aioweb.json_response(
+            {"candidates": [], "ocr": False,
+             "note": "Couldn't read any text from that image (OCR may be unavailable)."}
+        )
+    return _aioweb.json_response(
+        {"candidates": _parse_stash_text(text), "ocr": True}
+    )
+
+
+async def _h_wars(request):
+    guild = _guild_from(request.query.get("guild"))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    return _aioweb.json_response({"wars": _wars_list(store)})
+
+
 _web_started = False
 
 
@@ -698,6 +908,11 @@ async def start_web_server() -> None:
             _aioweb.post("/api/role", _h_role),
             _aioweb.post("/api/remove", _h_remove),
             _aioweb.post("/api/kos_remove", _h_kos_remove),
+            _aioweb.get("/api/stash", _h_stash),
+            _aioweb.post("/api/stash", _h_stash_set),
+            _aioweb.post("/api/stash_remove", _h_stash_remove),
+            _aioweb.post("/api/stash_scan", _h_stash_scan),
+            _aioweb.get("/api/wars", _h_wars),
         ]
     )
     runner = _aioweb.AppRunner(app)
@@ -775,8 +990,9 @@ _PAGE_HTML = """
   button.ghost{background:transparent}
   button.danger{border-color:rgba(239,68,68,.3);color:#ffb0b0;background:transparent}
   button.danger:hover{background:var(--bad);border-color:var(--bad);color:#fff}
-  input[type=text],select{font:inherit;background:rgba(255,255,255,.04);border:1px solid var(--line);
-    color:var(--text);padding:11px 14px;border-radius:12px;outline:none;transition:.16s}
+  input[type=text],input[type=number],input:not([type]),select{font:inherit;background:rgba(255,255,255,.04);
+    border:1px solid var(--line);color:var(--text);padding:11px 14px;border-radius:12px;outline:none;transition:.16s}
+  .cand input,.addbar input{padding:9px 12px}
   input:focus,select:focus{border-color:rgba(244,63,94,.55);background:rgba(244,63,94,.06)}
   .muted{color:var(--mute)}
 
@@ -856,6 +1072,26 @@ _PAGE_HTML = """
   @keyframes toastin{from{opacity:0;transform:translateX(20px)}to{opacity:1;transform:none}}
   @media(max-width:560px){#toasts{left:14px;right:14px;max-width:none}}
   footer{color:var(--mute);font-size:12px;text-align:center;padding:30px 18px}
+
+  .addbar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+  .addbar .i{flex:1;min-width:150px}.addbar .q{width:92px}
+  .drop{border:2px dashed var(--line);border-radius:16px;padding:22px;text-align:center;cursor:pointer;
+    transition:.18s;background:rgba(255,255,255,.02);margin-bottom:14px}
+  .drop:hover,.drop.over{border-color:rgba(244,63,94,.6);background:rgba(244,63,94,.07)}
+  .drop b{font-size:15px}
+  .cand{display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid var(--line)}
+  .cand .ci{flex:1}.cand .cq{width:78px}
+  .sitem{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);
+    border-radius:13px;padding:10px 14px;backdrop-filter:blur(8px)}
+  .sitem .q{display:flex;align-items:center;gap:7px}
+  .sitem .q button{padding:4px 11px;border-radius:9px;font-weight:800}
+  .sitem .qn{min-width:46px;text-align:center;font-weight:800;font-variant-numeric:tabular-nums}
+  .warcard{display:flex;align-items:center;gap:14px;background:var(--card);border:1px solid var(--line);
+    border-radius:14px;padding:14px 16px;backdrop-filter:blur(8px)}
+  .warcard .score{font-size:23px;font-weight:800;font-variant-numeric:tabular-nums}
+  .badge{font-size:11px;font-weight:700;padding:2px 10px;border-radius:999px;text-transform:uppercase;letter-spacing:.5px}
+  .badge.live{background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)}
+  .badge.done{background:rgba(255,255,255,.05);color:var(--mute);border:1px solid var(--line)}
 </style>
 </head>
 <body>
@@ -885,6 +1121,8 @@ _PAGE_HTML = """
   <div class="tabs">
     <div class="tab active" data-tab="roster" onclick="setTab('roster')">👥 Roster</div>
     <div class="tab" data-tab="kos" onclick="setTab('kos')">💀 KOS</div>
+    <div class="tab" data-tab="stash" onclick="setTab('stash')">📦 Stash</div>
+    <div class="tab" data-tab="wars" onclick="setTab('wars')">⚔️ Wars</div>
   </div>
 
   <div class="toolbar">
@@ -895,6 +1133,8 @@ _PAGE_HTML = """
 
   <div id="rosterView"></div>
   <div id="kosView" style="display:none"></div>
+  <div id="stashView" style="display:none"></div>
+  <div id="warsView" style="display:none"></div>
 </div>
 
 <footer>Only people with the website-access role can open this · changes apply to Discord live · 天使</footer>
@@ -938,10 +1178,10 @@ async function reload(){
   const sel=$("guildSel");if(sel&&sel.value)STATE.guild=sel.value;
   const g=encodeURIComponent(STATE.guild);
   try{
-    const [ov,ro,ko]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g)]);
+    const [ov,ro,ko,stn,wa]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g),api("/api/stash?guild="+g),api("/api/wars?guild="+g)]);
     $("sub").textContent=ro.guild?.name||"Roster";
     renderStats(ov.overview);
-    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];
+    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];STATE.stash=stn.items||[];STATE.stashTotal=stn.total||0;STATE.wars=wa.wars||[];
     render();
   }catch(e){ if(e.status===401||e.status===403) return boot(); toast(e.message||"Failed to load.","err"); }
 }
@@ -959,10 +1199,10 @@ function renderStats(o){
 }
 function setTab(t){
   TAB=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===t));
-  show("rosterView",t==="roster");show("kosView",t==="kos");
-  $("search").placeholder=t==="roster"?"Search members…":"Search KOS…";render();
+  ["roster","kos","stash","wars"].forEach(v=>show(v+"View",t===v));
+  $("search").placeholder={roster:"Search members…",kos:"Search KOS…",stash:"Search items…",wars:"Wars"}[t]||"Search…";render();
 }
-function render(){TAB==="roster"?renderRoster():renderKos();}
+function render(){({roster:renderRoster,kos:renderKos,stash:renderStash,wars:renderWars}[TAB]||renderRoster)();}
 function renderRoster(){
   const q=$("search").value.toLowerCase();
   let ms=STATE.members.filter(m=>m.name.toLowerCase().includes(q)||(m.rank||"").toLowerCase().includes(q));
@@ -1023,6 +1263,44 @@ async function removeKos(uid,name){
   try{await post("/api/kos_remove",{guild:STATE.guild,user_id:uid});toast("Took "+name+" off KOS","ok");await reload();}
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
+
+function renderStash(){
+  const q=$("search").value.toLowerCase();
+  const items=(STATE.stash||[]).filter(i=>i.item.toLowerCase().includes(q));
+  $("count").textContent=(STATE.stash||[]).length+" items · "+(STATE.stashTotal||0)+" total";
+  const add=`<div class="addbar"><input class="i" id="si" placeholder="Item name" onkeydown="if(event.key==='Enter')stashAdd()"><input class="q" id="sq" type="number" placeholder="Qty" value="1"><button class="brand-btn" onclick="stashAdd()">Add</button></div>`;
+  const drop=`<div class="drop" id="drop" onclick="$('file').click()"><div>📸 <b>Drop a stash screenshot</b> or click to upload</div><small class="muted">Reads the item text with OCR — you confirm before anything is added</small><input id="file" type="file" accept="image/*" hidden></div><div id="cands" class="card" style="display:none;padding:14px;margin-bottom:14px"></div>`;
+  const list=items.length?`<ul class="members" style="gap:8px">`+items.map(stashRow).join("")+`</ul>`:`<div class="empty">Stash is empty — add an item or scan a screenshot.</div>`;
+  $("stashView").innerHTML=add+drop+list;wireDrop();
+}
+function stashRow(i){return `<li class="sitem"><div class="grow"><div class="mname">${h(i.item)}</div></div><div class="q"><button onclick="stashDelta('${h(i.item)}',-1)">−</button><span class="qn">${i.qty}</span><button onclick="stashDelta('${h(i.item)}',1)">+</button></div><button class="danger" onclick="stashRemove('${h(i.item)}')">✕</button></li>`;}
+function wireDrop(){const d=$("drop"),f=$("file");if(!d)return;f.onchange=()=>{if(f.files[0])scanFile(f.files[0]);};d.ondragover=e=>{e.preventDefault();d.classList.add("over");};d.ondragleave=()=>d.classList.remove("over");d.ondrop=e=>{e.preventDefault();d.classList.remove("over");if(e.dataTransfer.files[0])scanFile(e.dataTransfer.files[0]);};}
+async function scanFile(file){toast("Scanning screenshot…");const fd=new FormData();fd.append("image",file);
+  try{const r=await fetch("/api/stash_scan?guild="+encodeURIComponent(STATE.guild),{method:"POST",body:fd});const d=await r.json();
+    if(!r.ok)throw new Error(d.error||"Scan failed");
+    if(!d.candidates||!d.candidates.length){toast(d.note||"Couldn't read any items from that image.","err");return;}
+    renderCandidates(d.candidates);}catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Scan failed","err");}}
+function renderCandidates(c){const el=$("cands");el.style.display="";
+  el.innerHTML=`<div style="font-weight:700;margin-bottom:10px">Found ${c.length} — tick what to add, fix anything, then confirm</div>`
+    +c.map((x,i)=>`<div class="cand"><input type="checkbox" checked id="c${i}"><input class="ci" id="ci${i}" value="${h(x.item)}"><input class="cq" id="cq${i}" type="number" value="${x.qty}"></div>`).join("")
+    +`<div style="margin-top:12px;display:flex;gap:8px"><button class="brand-btn" onclick="addCandidates(${c.length})">Add to stash</button><button onclick="$('cands').style.display='none'">Cancel</button></div>`;}
+async function addCandidates(n){let added=0;
+  for(let i=0;i<n;i++){const cb=$("c"+i);if(!cb||!cb.checked)continue;const item=$("ci"+i).value.trim(),qty=$("cq"+i).value;if(!item)continue;
+    try{await post("/api/stash",{guild:STATE.guild,item,qty,mode:"add"});added++;}catch(e){}}
+  const el=$("cands");if(el)el.style.display="none";toast("Added "+added+" item"+(added===1?"":"s")+" to the stash","ok");await reload();}
+async function stashAdd(){const item=($("si")||{}).value?.trim(),qty=($("sq")||{}).value||1;
+  if(!item){toast("Enter an item name","err");return;}
+  try{await post("/api/stash",{guild:STATE.guild,item,qty,mode:"add"});toast("Added "+item,"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
+async function stashDelta(item,d){try{await post("/api/stash",{guild:STATE.guild,item,qty:d,mode:"add"});await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
+async function stashRemove(item){try{await post("/api/stash_remove",{guild:STATE.guild,item});toast("Removed "+item,"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}}
+function renderWars(){const ws=STATE.wars||[];$("count").textContent=ws.length+" war"+(ws.length===1?"":"s");
+  if(!ws.length){$("warsView").innerHTML=`<div class="empty">No wars tracked.</div>`;return;}
+  $("warsView").innerHTML=`<ul class="members" style="gap:9px">`+ws.map(w=>{
+    const col=w.wins>w.losses?"var(--ok)":w.losses>w.wins?"var(--bad)":"var(--mute)";
+    return `<li class="warcard"><div class="grow"><div class="mname">vs ${h(w.enemy)}</div><div class="muted" style="font-size:12px">${w.active?"In progress":"Ended"}${w.first_to?" · first to "+w.first_to:""}</div></div><span class="badge ${w.active?'live':'done'}">${w.active?'Live':'Done'}</span><div class="score" style="color:${col}">${w.wins} – ${w.losses}</div></li>`;}).join("")+`</ul>`;}
 boot();
 </script>
 </body>

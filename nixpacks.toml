@@ -1,0 +1,5 @@
+# Railway (Nixpacks) build config — installs the Tesseract OCR engine so the
+# web stash scanner can read screenshots. The bot runs fine without it; OCR
+# just returns "nothing read" if the engine is missing.
+[phases.setup]
+aptPkgs = ["tesseract-ocr"]
