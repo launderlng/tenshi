@@ -120,6 +120,7 @@ async def strike_remove(interaction: discord.Interaction, strike_id: int) -> Non
         return
     store["strikes"].remove(hit)
     save_data(DATA)
+    await notify_strike_change(interaction.guild, store, hit["user_id"], kind="remove", strike_id=strike_id)
     await interaction.response.send_message(f"🗑️ Removed strike `#{strike_id}` from <@{hit['user_id']}>.")
     await send_log(interaction.guild, store, f"🗑️ Strike `#{strike_id}` removed from <@{hit['user_id']}>.",
                    category="roster", actor=interaction.user)
@@ -134,6 +135,8 @@ async def strike_clear(interaction: discord.Interaction, member: discord.Member)
     store["strikes"] = [s for s in store["strikes"] if s["user_id"] != member.id]
     n = before - len(store["strikes"])
     save_data(DATA)
+    if n:
+        await notify_strike_change(interaction.guild, store, member.id, kind="clear")
     await interaction.response.send_message(f"🧹 Cleared **{n}** strike(s) from {member.mention}.")
     await send_log(interaction.guild, store, f"🧹 Cleared {n} strike(s) from {member.mention}.",
                    category="roster", actor=interaction.user)

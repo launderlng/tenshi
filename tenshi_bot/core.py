@@ -463,6 +463,43 @@ def now_stamp() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
 
+async def notify_strike_change(guild, store, user_id: int, *, kind: str, strike_id=None) -> None:
+    """DM a member that a strike was removed (`kind='remove'`) or all of their
+    strikes were cleared (`kind='clear'`). Best-effort — a closed DM or a missing
+    member is swallowed so it never blocks the action. Works the same whether the
+    change came from `/strike` in Discord or from the website."""
+    try:
+        member = guild.get_member(user_id)
+        if member is None:
+            member = await guild.fetch_member(user_id)
+    except discord.HTTPException:
+        return
+    if member is None:
+        return
+    limit = int(store.get("strike_limit", 3) or 3)
+    count = sum(1 for s in store.get("strikes", []) if s.get("user_id") == user_id)
+    bar = "🟥" * min(count, limit) + "⬛" * max(0, limit - count)
+    if kind == "clear":
+        title = "🧹 Your strikes were cleared"
+        desc = f"All of your strikes in **{guild.name}** have been cleared. You're back to **0/{limit}**. ✨"
+        color = OK
+    else:
+        sid = f" `#{strike_id}`" if strike_id is not None else ""
+        title = "🗑️ A strike was removed"
+        desc = (
+            f"A strike{sid} was removed in **{guild.name}**.\n"
+            f"You're now on **{count}/{limit}**.\n{bar}"
+        )
+        color = OK if count < limit else WARN
+    embed = discord.Embed(title=title, description=desc, color=color,
+                          timestamp=datetime.datetime.now(datetime.timezone.utc))
+    _brand(embed, guild)
+    try:
+        await member.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
 LOG_CATEGORIES = {
     # category -> (emoji, label, color)
     "roster": ("📋", "Roster", BLUE),

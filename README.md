@@ -136,8 +136,12 @@ installs it on Railway automatically. Without it, scanning just reports
 
 Access is gated by a dedicated **Website access role** (separate from
 leadership): people log in with Discord, and only those holding that role can
-open it. A bot cannot remove anyone's *server tag* — that's controlled by each
-user — so this manages roster roles, not tags.
+open it. Access is re-checked on every action and by a fast background poll
+(fetched live from Discord, so it works even without the members intent) plus
+whenever the tab regains focus — so if someone's website-access role is taken
+away, they're logged out almost immediately. A bot cannot remove anyone's
+*server tag* — that's controlled by each user — so this manages roster roles,
+not tags.
 
 **Setup**
 1. In the Discord **Developer Portal → OAuth2**, copy the **Client Secret** and

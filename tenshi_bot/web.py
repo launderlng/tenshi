@@ -924,13 +924,17 @@ async def _oauth_user(token: str) -> dict | None:
 
 # ---- role-based access ------------------------------------------------------ #
 
-async def _has_web_access(guild, uid) -> bool:
-    """True only if the user holds this guild's configured website-access role."""
+async def _has_web_access(guild, uid, live: bool = False) -> bool:
+    """True only if the user holds this guild's configured website-access role.
+
+    With `live=True` the member is fetched fresh from the API instead of the
+    gateway cache, so a role that was just removed is seen immediately even when
+    the bot isn't running the members intent (used by the fast logout poll)."""
     store = guild_store(DATA, guild.id)
     rid = store.get("web_role_id")
     if not rid:
         return False
-    member = guild.get_member(int(uid))
+    member = None if live else guild.get_member(int(uid))
     if member is None:
         try:
             member = await guild.fetch_member(int(uid))
@@ -978,6 +982,25 @@ async def _h_me(request):
             "guilds": [{"id": str(g.id), "name": g.name} for g in guilds],
         }
     )
+
+
+async def _h_access(request):
+    """Fast, authoritative 'are you still allowed in' check for the client's
+    logout poll. Fetches the member live so a just-removed role logs them out
+    right away. Returns {ok: bool} and never leaks detail."""
+    if not _configured():
+        return _aioweb.json_response({"ok": False})
+    uid = _read_session(request.cookies.get(_COOKIE))
+    if not uid:
+        return _aioweb.json_response({"ok": False})
+    guild = _guild_from(request.query.get("guild"))
+    if guild is not None:
+        return _aioweb.json_response({"ok": await _has_web_access(guild, uid, live=True)})
+    # no specific guild — allowed if still in any accessible guild
+    for g in bot.guilds:
+        if await _has_web_access(g, uid, live=True):
+            return _aioweb.json_response({"ok": True})
+    return _aioweb.json_response({"ok": False})
 
 
 async def _h_login(request):
@@ -1284,6 +1307,7 @@ async def _h_strike_remove(request):
             )
         except discord.HTTPException:
             pass
+        await notify_strike_change(guild, store, result["user_id"], kind="remove", strike_id=sid)
     return _aioweb.json_response(result, status=200 if result.get("ok") else 404)
 
 
@@ -1313,6 +1337,7 @@ async def _h_strike_clear(request):
             )
         except discord.HTTPException:
             pass
+        await notify_strike_change(guild, store, uid, kind="clear")
     return _aioweb.json_response(result)
 
 
@@ -1397,6 +1422,7 @@ async def start_web_server() -> None:
             _aioweb.get("/callback", _h_callback),
             _aioweb.get("/logout", _h_logout),
             _aioweb.get("/api/me", _h_me),
+            _aioweb.get("/api/access", _h_access),
             _aioweb.get("/api/overview", _h_overview),
             _aioweb.get("/api/roster", _h_roster),
             _aioweb.get("/api/kos", _h_kos),
@@ -1717,13 +1743,21 @@ async function boot(){
   }
   show("gate",false);show("app",true);$("logoutBtn").style.display="";
   if(window.__recheck)clearInterval(window.__recheck);
-  window.__recheck=setInterval(async()=>{try{const m=await api("/api/me");if(!m.authed){clearInterval(window.__recheck);window.__recheck=null;boot();}}catch(e){}},45000);
+  window.__recheck=setInterval(checkAccess,8000);
   const sel=$("guildSel");
   sel.innerHTML=me.guilds.map(x=>`<option value="${h(x.id)}">${h(x.name)}</option>`).join("");
   show("guildRow",me.guilds.length>1);
   STATE.guild=me.guilds.length?me.guilds[0].id:"";
   await reload();
 }
+async function checkAccess(){
+  try{
+    const r=await api("/api/access?guild="+encodeURIComponent(STATE.guild||""));
+    if(!r.ok) gate("🚫","Access removed","Your website access was removed, so you've been logged out.",'<a href="/logout"><button>Log out</button></a>');
+  }catch(e){ if(e.status===401||e.status===403) boot(); }
+}
+document.addEventListener("visibilitychange",()=>{if(!document.hidden&&window.__recheck)checkAccess();});
+window.addEventListener("focus",()=>{if(window.__recheck)checkAccess();});
 async function reload(){
   const sel=$("guildSel");if(sel&&sel.value)STATE.guild=sel.value;
   const g=encodeURIComponent(STATE.guild);
