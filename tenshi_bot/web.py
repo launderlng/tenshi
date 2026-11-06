@@ -401,9 +401,12 @@ def _parse_stash_text(text: str) -> list[dict]:
         name = re.sub(r"\b\d{1,6}\s*x\b|\bx\s*\d{1,6}\b|\b\d{1,6}\b", " ", line, flags=re.I)
         name = re.sub(r"[^A-Za-z0-9 \-'&]", " ", name)
         name = re.sub(r"\s+", " ", name).strip()
-        if len(name) < 2 or name.lower() in _STASH_SKIP:
+        if name.lower() in _STASH_SKIP:
             continue
-        if not re.search(r"[A-Za-z]", name):
+        # drop OCR garbage: need at least 3 letters and a real word
+        if len(re.sub(r"[^A-Za-z]", "", name)) < 3:
+            continue
+        if not any(len(w) >= 3 for w in name.split()):
             continue
         out.append({"item": name.title(), "qty": qty})
     # merge duplicates
@@ -459,11 +462,42 @@ def _ocr_image(data: bytes) -> str:
         return ""
 
 
+def _trim_bg(img):
+    """Make the slot background transparent and crop to the icon content. The
+    background colour is taken from the corners; pixels close to it become
+    transparent, and the result is cropped to what's left."""
+    from PIL import Image
+
+    rgba = img.convert("RGBA")
+    if max(rgba.size) > 120:
+        rgba.thumbnail((120, 120))
+    px = rgba.load()
+    w, h = rgba.size
+    corners = [px[0, 0], px[w - 1, 0], px[0, h - 1], px[w - 1, h - 1]]
+    br = sum(c[0] for c in corners) // 4
+    bg = sum(c[1] for c in corners) // 4
+    bb = sum(c[2] for c in corners) // 4
+    minx, miny, maxx, maxy = w, h, 0, 0
+    for y in range(h):
+        for x in range(w):
+            r, g, b, _ = px[x, y]
+            if abs(r - br) + abs(g - bg) + abs(b - bb) < 120:
+                px[x, y] = (r, g, b, 0)
+            else:
+                minx, miny = min(minx, x), min(miny, y)
+                maxx, maxy = max(maxx, x), max(maxy, y)
+    if maxx <= minx or maxy <= miny:
+        return rgba  # all background — leave as-is
+    return rgba.crop((minx, miny, maxx + 1, maxy + 1))
+
+
 def _scan_stash(data: bytes) -> list[dict]:
-    """OCR an uploaded screenshot into {item, qty, icon, image} candidates, where
-    `image` is a small icon cropped from the screenshot next to each item's text.
-    Best-effort: inventory layouts vary, so some crops will be off. Returns [] if
-    OCR tooling is unavailable."""
+    """OCR an uploaded screenshot into {item, qty, icon, image} candidates.
+
+    Words are clustered by position (not Tesseract's line grouping) so a grid
+    inventory doesn't merge items across columns, and each item's icon is cropped
+    from the slot with its background cut out. Best-effort — still imperfect, so
+    the page shows candidates to confirm. Returns [] if OCR is unavailable."""
     try:
         import base64 as _b64
         import io as _io
@@ -484,41 +518,75 @@ def _scan_stash(data: bytes) -> list[dict]:
         hist = proc.histogram()
         if sum(hist[:128]) > sum(hist[128:]):
             proc = ImageOps.invert(proc)
-        data_dict = pytesseract.image_to_data(
-            proc, config="--psm 6", output_type=pytesseract.Output.DICT
+        dd = pytesseract.image_to_data(
+            proc, config="--psm 11", output_type=pytesseract.Output.DICT
         )
-        groups: dict = {}
-        for i in range(len(data_dict["text"])):
-            if not (data_dict["text"][i] or "").strip():
+        words = []
+        for i in range(len(dd["text"])):
+            t = (dd["text"][i] or "").strip()
+            if not t:
                 continue
-            key = (data_dict["block_num"][i], data_dict["par_num"][i], data_dict["line_num"][i])
-            groups.setdefault(key, []).append(i)
+            try:
+                conf = float(dd["conf"][i])
+            except (TypeError, ValueError):
+                conf = 0
+            if conf < 35:  # drop low-confidence noise
+                continue
+            words.append(
+                {"t": t, "x": dd["left"][i], "y": dd["top"][i],
+                 "w": dd["width"][i], "h": dd["height"][i]}
+            )
+        if not words:
+            return []
+        heights = sorted(w["h"] for w in words)
+        mh = heights[len(heights) // 2] or 12
+
+        # union-find: connect words that sit next to each other (same slot/label)
+        parent = list(range(len(words)))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        for i in range(len(words)):
+            for j in range(i + 1, len(words)):
+                A, B = words[i], words[j]
+                gy = max(0, max(A["y"], B["y"]) - min(A["y"] + A["h"], B["y"] + B["h"]))
+                gx = max(0, max(A["x"], B["x"]) - min(A["x"] + A["w"], B["x"] + B["w"]))
+                if gy < 0.6 * mh and gx < 1.3 * mh:  # close vertically AND horizontally
+                    parent[find(i)] = find(j)
+
+        clusters: dict = {}
+        for i in range(len(words)):
+            clusters.setdefault(find(i), []).append(words[i])
 
         merged: dict = {}
-        for idxs in groups.values():
-            line = " ".join(data_dict["text"][i] for i in idxs).strip()
+        for ws in clusters.values():
+            ws.sort(key=lambda w: (w["y"], w["x"]))
+            line = " ".join(w["t"] for w in ws).strip()
             parsed = _parse_stash_text(line)
             if not parsed:
                 continue
             cand = parsed[0]
-            x0 = min(data_dict["left"][i] for i in idxs) / scale
-            y0 = min(data_dict["top"][i] for i in idxs) / scale
-            y1 = max(data_dict["top"][i] + data_dict["height"][i] for i in idxs) / scale
-            th = max(y1 - y0, 12)
-            side = th * 2.2
-            if x0 - side > 0:  # icon usually sits to the left of the label…
-                box = (x0 - side, (y0 + y1) / 2 - side / 2, x0, (y0 + y1) / 2 + side / 2)
-            else:  # …or just above it in a grid
-                box = (x0, y0 - side, x0 + side, y0)
-            bx0, by0 = max(box[0], 0), max(box[1], 0)
-            bx1, by1 = min(box[2], orig.width), min(box[3], orig.height)
+            x0 = min(w["x"] for w in ws) / scale
+            y0 = min(w["y"] for w in ws) / scale
+            x1 = max(w["x"] + w["w"] for w in ws) / scale
+            y1 = max(w["y"] + w["h"] for w in ws) / scale
+            # crop the slot: a square around the cluster, cut the background out
+            side = max(x1 - x0, y1 - y0) * 1.7
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            bx0, by0 = max(cx - side / 2, 0), max(cy - side / 2, 0)
+            bx1, by1 = min(cx + side / 2, orig.width), min(cy + side / 2, orig.height)
             img_uri = ""
             if bx1 - bx0 > 8 and by1 - by0 > 8:
                 try:
-                    crop = orig.crop((int(bx0), int(by0), int(bx1), int(by1))).resize((56, 56))
+                    crop = _trim_bg(orig.crop((int(bx0), int(by0), int(bx1), int(by1))))
+                    crop = crop.resize((56, 56))
                     buf = _io.BytesIO()
-                    crop.save(buf, "JPEG", quality=70)
-                    img_uri = "data:image/jpeg;base64," + _b64.b64encode(buf.getvalue()).decode()
+                    crop.save(buf, "PNG")
+                    img_uri = "data:image/png;base64," + _b64.b64encode(buf.getvalue()).decode()
                 except Exception:
                     pass
             slot = merged.setdefault(cand["item"], {"qty": 0, "image": ""})
@@ -570,6 +638,7 @@ def _eois_list(guild: "discord.Guild", store: dict) -> list[dict]:
         m = guild.get_member(uid) if uid else None
         out.append(
             {
+                "id": str(mid),
                 "ign": app.get("ign", ""),
                 "role": app.get("role", ""),
                 "applicant": m.display_name if m is not None else (app.get("ign") or str(uid)),
@@ -1075,6 +1144,35 @@ async def _h_eois(request):
     return _aioweb.json_response({"eois": _eois_list(guild, store)})
 
 
+async def _h_eoi_close(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    mid = str(body.get("msg_id") or "")
+    store = guild_store(DATA, guild.id)
+    rec = store.get("eoi_timers", {}).get(mid)
+    if rec is None or not rec.get("channel_id"):
+        return _aioweb.json_response(
+            {"error": "Can't close that EOI (no channel on record)."}, status=400
+        )
+    if rec.get("done"):
+        return _aioweb.json_response({"ok": True, "already": True})
+    rec["done"] = True  # mark ended first, same as the timer loop does
+    save_data(DATA)
+    try:
+        await _close_eoi(guild, store, int(mid), rec)
+    except (discord.HTTPException, ValueError) as exc:
+        log.info("web EOI close failed: %s", exc)
+    return _aioweb.json_response({"ok": True})
+
+
 _web_started = False
 
 
@@ -1116,6 +1214,7 @@ async def start_web_server() -> None:
             _aioweb.post("/api/stash_scan", _h_stash_scan),
             _aioweb.get("/api/wars", _h_wars),
             _aioweb.get("/api/eois", _h_eois),
+            _aioweb.post("/api/eoi_close", _h_eoi_close),
         ]
     )
     runner = _aioweb.AppRunner(app)
@@ -1539,8 +1638,13 @@ function renderWars(){const ws=STATE.wars||[];$("count").textContent=ws.length+"
     return `<li class="warcard"><div class="grow"><div class="mname">vs ${h(w.enemy)}</div><div class="muted" style="font-size:12px">${w.active?"In progress":"Ended"}${w.first_to?" · first to "+w.first_to:""}</div></div><span class="badge ${w.active?'live':'done'}">${w.active?'Live':'Done'}</span><div class="score" style="color:${col}">${w.wins} – ${w.losses}</div></li>`;}).join("")+`</ul>`;}
 function renderEois(){const es=STATE.eois||[];$("count").textContent=es.length+" pending";
   if(!es.length){$("eoisView").innerHTML=`<div class="empty">No pending applications. 🎉</div>`;return;}
-  $("eoisView").innerHTML=`<ul class="members" style="gap:9px">`+es.map(e=>`<li class="member">${e.avatar?`<div class="av"><img src="${h(e.avatar)}" alt=""></div>`:`<div class="av skull" style="background:linear-gradient(135deg,#1a2033,#243154)">📨</div>`}<div class="grow"><div class="mname">${h(e.ign||e.applicant||"Applicant")}</div><div class="muted" style="font-size:12px">${h(e.role||"—")}${e.applicant&&e.applicant!==e.ign?" · "+h(e.applicant):""}</div></div><div style="display:flex;gap:7px;align-items:center">${e.ends?`<span class="badge done" data-ts="${e.ends}"></span>`:""}<span class="badge" style="background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)">✅ ${e.yes}</span><span class="badge" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.4)">❌ ${e.no}</span></div></li>`).join("")+`</ul>`;
+  $("eoisView").innerHTML=`<ul class="members" style="gap:9px">`+es.map(e=>`<li class="member">${e.avatar?`<div class="av"><img src="${h(e.avatar)}" alt=""></div>`:`<div class="av skull" style="background:linear-gradient(135deg,#1a2033,#243154)">📨</div>`}<div class="grow"><div class="mname">${h(e.ign||e.applicant||"Applicant")}</div><div class="muted" style="font-size:12px">${h(e.role||"—")}${e.applicant&&e.applicant!==e.ign?" · "+h(e.applicant):""}</div></div><div style="display:flex;gap:7px;align-items:center">${e.ends?`<span class="badge done" data-ts="${e.ends}"></span>`:""}<span class="badge" style="background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)">✅ ${e.yes}</span><span class="badge" style="background:rgba(239,68,68,.15);color:#fca5a5;border:1px solid rgba(239,68,68,.4)">❌ ${e.no}</span><button class="danger" style="padding:6px 11px" onclick="closeEoi('${h(e.id)}','${h(e.ign||e.applicant||"this")}')">Close</button></div></li>`).join("")+`</ul>`;
   document.querySelectorAll('#eoisView [data-ts]').forEach(el=>{const t=+el.dataset.ts,sec=t-Math.floor(Date.now()/1000);el.textContent=sec<=0?"closing":"closes "+(sec>86400?Math.round(sec/86400)+"d":sec>3600?Math.round(sec/3600)+"h":Math.max(Math.round(sec/60),1)+"m");});
+}
+async function closeEoi(id,name){
+  if(!confirm("Close voting for "+name+"'s application now? Votes are tallied and the post locks."))return;
+  try{await post("/api/eoi_close",{guild:STATE.guild,msg_id:id});toast("Closed "+name+"'s EOI","ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 boot();
 </script>
