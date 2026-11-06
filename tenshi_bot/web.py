@@ -1714,6 +1714,47 @@ _PAGE_HTML = """
   .badge{font-size:11px;font-weight:700;padding:2px 10px;border-radius:999px;text-transform:uppercase;letter-spacing:.5px}
   .badge.live{background:rgba(34,197,94,.15);color:#86efac;border:1px solid rgba(34,197,94,.4)}
   .badge.done{background:rgba(255,255,255,.05);color:var(--mute);border:1px solid var(--line)}
+
+  /* ===== premium pass: gate-grade styling across the whole panel ===== */
+  body::before{
+    background:
+      radial-gradient(1100px 660px at 8% -12%, rgba(225,29,72,.30), transparent 58%),
+      radial-gradient(940px 640px at 106% -2%, rgba(150,20,95,.24), transparent 55%),
+      radial-gradient(820px 820px at 50% 122%, rgba(74,12,46,.34), transparent 62%) !important}
+  header{border-bottom:none;position:sticky;
+    background:
+      linear-gradient(180deg,rgba(10,7,12,.94),rgba(10,7,12,.55)) padding-box,
+      linear-gradient(90deg,transparent,rgba(244,63,94,.6),transparent) border-box;
+    border-bottom:1px solid transparent;backdrop-filter:blur(14px) saturate(1.1)}
+  .logo{position:relative;z-index:1}
+  .logo::before{content:"";position:absolute;inset:-4px;border-radius:14px;z-index:-1;
+    background:conic-gradient(from 0deg,#e11d48,#f43f5e,#be123c,#e11d48);filter:blur(7px);opacity:.75;
+    animation:ringspin 5s linear infinite}
+  @keyframes ringspin{to{transform:rotate(360deg)}}
+  .brand{text-shadow:0 0 30px rgba(244,63,94,.25)}
+
+  .stat{border:1px solid rgba(244,63,94,.16);
+    background:linear-gradient(180deg,rgba(28,17,23,.72),rgba(14,14,19,.72));
+    box-shadow:0 10px 34px rgba(0,0,0,.45)}
+  .stat::before{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:0;
+    background:radial-gradient(150px 90px at 86% -10%, rgba(244,63,94,.16), transparent 70%)}
+  .stat>*{position:relative;z-index:1}
+  .stat:hover{transform:translateY(-4px) scale(1.015);border-color:rgba(244,63,94,.5);
+    box-shadow:0 20px 48px rgba(225,29,72,.22)}
+  .stat .n{text-shadow:0 0 24px rgba(244,63,94,.3)}
+
+  .tabs{background:linear-gradient(180deg,rgba(28,17,23,.6),rgba(14,14,19,.6));
+    border:1px solid rgba(255,255,255,.08);box-shadow:0 10px 30px rgba(0,0,0,.4)}
+  .tab:hover{color:#ffd9e1}
+  .tab.active{animation:tabglow 2.6s ease-in-out infinite}
+  @keyframes tabglow{50%{box-shadow:0 8px 28px rgba(225,29,72,.7)}}
+
+  li.member,.warcard,.sitem{box-shadow:0 8px 26px rgba(0,0,0,.35)}
+  li.member:hover,.warcard:hover,.sitem:hover{box-shadow:0 16px 42px rgba(225,29,72,.16)}
+  button.brand-btn{box-shadow:0 12px 30px rgba(225,29,72,.42)}
+  .toolbar input:focus,#search:focus{outline:none;border-color:rgba(244,63,94,.5);
+    box-shadow:0 0 0 3px rgba(225,29,72,.14)}
+  .ranklabel{color:#ff9db0}
 </style>
 </head>
 <body>
@@ -1792,8 +1833,8 @@ function applyBrand(b){
 function gate(icon,title,text,actions){
   show("app",false);show("gate",true);$("logoutBtn").style.display="none";
   if(window.__recheck){clearInterval(window.__recheck);window.__recheck=null;}
-  const logo=BRAND.icon?`<img class="glogo" src="${h(BRAND.icon)}" alt="">`:`<span class="gemoji">${icon}</span>`;
-  const badge=BRAND.icon?`<span class="gbadge">${icon}</span>`:"";
+  const logo=BRAND.icon?`<img class="glogo" src="${h(BRAND.icon)}" alt="">`:`<span class="gemoji">${icon||"🐉"}</span>`;
+  const badge=(BRAND.icon&&icon)?`<span class="gbadge">${icon}</span>`:"";
   $("gate").innerHTML=`<div class="gatecard"><div class="gicon">${logo}${badge}</div><h2>${h(title)}</h2><p class="muted">${h(text)}</p><div id="gateActions">${actions||""}</div></div>`;
 }
 async function boot(){
@@ -1802,7 +1843,7 @@ async function boot(){
   if(!me.authed){
     if(me.reason==="not_configured") gate("⚙️","Setup needed","The owner still needs to set DISCORD_CLIENT_SECRET and a Website access role before anyone can log in.");
     else if(me.reason==="no_access") gate("🚫","No access","You don't have the website-access role yet. Ask leadership to give it to you, then reload this page.",'<a href="/logout"><button>Log out</button></a>');
-    else gate("🐉","Tenshi Admin","Log in with Discord to manage the roster, stash, KOS, strikes and more.",'<a href="/login"><button class="discordbtn">'+DSVG+' Log in with Discord</button></a>');
+    else gate("","Tenshi Admin","Log in with Discord to manage the roster, stash, KOS, strikes and more.",'<a href="/login"><button class="discordbtn">'+DSVG+' Log in with Discord</button></a>');
     return;
   }
   show("gate",false);show("app",true);$("logoutBtn").style.display="";
