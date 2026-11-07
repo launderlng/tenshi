@@ -119,6 +119,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
             "radio_log_channel_id": None,
             "eoi_log_channel_id": None,
             "member_log_channel_id": None,
+            "web_log_channel_id": None,
             "orders": [],
             "next_order_id": 1,
             "tickets_open": True,
@@ -150,6 +151,7 @@ def guild_store(data: dict[str, Any], guild_id: int) -> dict[str, Any]:
     g.setdefault("radio_log_channel_id", None)
     g.setdefault("eoi_log_channel_id", None)
     g.setdefault("member_log_channel_id", None)
+    g.setdefault("web_log_channel_id", None)
     g.setdefault("join_log_channel_id", None)
     g.setdefault("welcome_channel_id", None)
     g.setdefault("staff_channel_id", None)
@@ -510,6 +512,7 @@ LOG_CATEGORIES = {
     "joins": ("🚪", "Joins & Leaves", TEAL),
     "tickets": ("🎫", "Tickets", SKY),
     "orders": ("💰", "Orders", WARN),
+    "web": ("🌐", "Website", PURPLE),
     "config": ("⚙️", "Config", MUTED),
     "activity": ("•", "Activity", EMBED_COLOR),
 }
@@ -524,6 +527,7 @@ LOG_ROUTING = {
     "joins": "join_log_channel_id",
     "tickets": "ticket_log_channel_id",
     "orders": "order_log_channel_id",
+    "web": "web_log_channel_id",
 }
 
 

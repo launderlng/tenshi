@@ -19,6 +19,7 @@ CONFIG_SETTINGS = {
     "join_log_channel": ("Join/leave log channel", "join_log_channel_id", "channel"),
     "ticket_log_channel": ("Ticket log channel", "ticket_log_channel_id", "channel"),
     "order_log_channel": ("Order log channel", "order_log_channel_id", "channel"),
+    "web_log_channel": ("Website log channel", "web_log_channel_id", "channel"),
     "welcome_channel": ("Welcome channel", "welcome_channel_id", "channel"),
     "staff_channel": ("Staff channel", "staff_channel_id", "channel"),
     "eoi_channel": ("EOI channel", "eoi_channel_id", "channel"),
@@ -39,6 +40,7 @@ _SETTING_EMOJI = {
     "log_channel": "📝", "roster_log_channel": "📋", "kos_log_channel": "💀",
     "radio_log_channel": "📻", "eoi_log_channel": "📨", "member_log_channel": "🎭",
     "join_log_channel": "🚪", "ticket_log_channel": "🎫", "order_log_channel": "💰",
+    "web_log_channel": "🌐",
 }
 _LOG_KEYS = [k for k in CONFIG_SETTINGS if k.endswith("log_channel")]
 _CHANNEL_KEYS = [k for k, v in CONFIG_SETTINGS.items() if v[2] == "channel"]

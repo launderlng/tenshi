@@ -303,7 +303,7 @@ async def _set_gang_role(guild, store, user_id: int, role_id: int, action: str) 
     await send_log(
         guild, store,
         f"🌐 {member.mention} — role **{role.name}** {action}ed via the website.",
-        category="roster",
+        category="web",
     )
     return {"ok": True, "action": action, "role": role.name}
 
@@ -329,7 +329,7 @@ async def _remove_kos(guild, store, user_id: int) -> dict:
             pass
     save_data(DATA)
     name = member.mention if member is not None else f"`{user_id}`"
-    await send_log(guild, store, f"🌐 {name} taken off KOS via the website.", category="kos")
+    await send_log(guild, store, f"🌐 {name} taken off KOS via the website.", category="web")
     return {
         "ok": True,
         "was_listed": was_listed,
@@ -796,7 +796,7 @@ async def _remove_from_roster(
         guild,
         store,
         f"🌐 {name} removed from the roster via the website.",
-        category="roster",
+        category="web",
         fields=[
             ("Roles removed", ", ".join(removed_roles) or "—", False),
             ("Couldn't remove", ", ".join(failed_roles) or "—", True),
@@ -1319,7 +1319,7 @@ async def _h_strike_remove(request):
             await send_log(
                 guild, store,
                 f"🗑️ Strike `#{sid}` removed from <@{result.get('user_id')}> via the website.",
-                category="roster", actor=_web_actor(request, guild),
+                category="web", actor=_web_actor(request, guild),
             )
         except discord.HTTPException:
             pass
@@ -1349,7 +1349,7 @@ async def _h_strike_clear(request):
             await send_log(
                 guild, store,
                 f"🧹 Cleared **{result['cleared']}** strike(s) from <@{uid}> via the website.",
-                category="roster", actor=_web_actor(request, guild),
+                category="web", actor=_web_actor(request, guild),
             )
         except discord.HTTPException:
             pass
