@@ -222,5 +222,80 @@ async def settings_logs(interaction: discord.Interaction, channel: discord.TextC
     )
 
 
+def _log_channel_name(setting_key: str) -> str:
+    """Friendly channel name for a *_log_channel setting key."""
+    if setting_key == "log_channel":
+        return "general-log"
+    return setting_key[: -len("_channel")].replace("_", "-")  # web_log_channel -> web-log
+
+
+@settings_group.command(
+    name="logs_setup",
+    description="Auto-create a Logs category with a channel for every log type (leadership)",
+)
+async def settings_logs_setup(interaction: discord.Interaction) -> None:
+    if not await _settings_guard(interaction):
+        return
+    guild = interaction.guild
+    me = guild.me
+    if me is None or not me.guild_permissions.manage_channels:
+        await interaction.response.send_message(
+            "I need the **Manage Channels** permission to create log channels.",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.defer(ephemeral=True)
+    store = guild_store(DATA, interaction.guild_id)
+
+    # find or create a private Logs category (staff-only)
+    cat = discord.utils.get(guild.categories, name="📋 Tenshi Logs")
+    if cat is None:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+        }
+        lead = _leadership_role(guild, store)
+        if lead is not None:
+            overwrites[lead] = discord.PermissionOverwrite(view_channel=True)
+        try:
+            cat = await guild.create_category(
+                "📋 Tenshi Logs", overwrites=overwrites, reason="Log channels setup"
+            )
+        except discord.HTTPException:
+            cat = None
+
+    created: list[str] = []
+    kept: list[str] = []
+    for k in _LOG_KEYS:
+        skey = CONFIG_SETTINGS[k][1]
+        cur = store.get(skey)
+        if cur and guild.get_channel(cur) is not None:
+            kept.append(k)
+            continue
+        try:
+            ch = await guild.create_text_channel(
+                _log_channel_name(k), category=cat, reason="Log channel setup"
+            )
+            store[skey] = ch.id
+            created.append(ch.mention)
+        except discord.HTTPException:
+            pass
+    save_data(DATA)
+
+    desc = f"Created **{len(created)}** log channel(s)" + (
+        " under **📋 Tenshi Logs**:" if cat is not None else ":"
+    )
+    desc += "\n" + ("\n".join(created) if created else "—")
+    if kept:
+        desc += f"\n\nLeft **{len(kept)}** already-set channel(s) alone. Run this again any time to re-create missing ones."
+    e = discord.Embed(title="✅  📋 Log channels ready", description=desc, color=OK)
+    _brand(e, guild)
+    await _send_card(interaction, [e], ephemeral=True)
+    await send_log(
+        guild, store, f"⚙️ Log channels auto-created via `/settings logs_setup` ({len(created)} new).",
+        category="config", actor=interaction.user,
+    )
+
+
 # export everything (incl. _helpers) to the modules that build on this one
 __all__ = [n for n in list(globals()) if not n.startswith("__")]
