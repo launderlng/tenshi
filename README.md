@@ -127,6 +127,10 @@ A browser page, served by the bot itself, that mirrors a lot of the bot. It's
 - **Wars tab** — active/past wars with live scores, win-rate bar, a recent
   rounds strip (🟩🟥), when each war started, the first-to target and progress,
   and the last round logged. Read-only.
+- **Orders tab** — every ticket/order: customer, items/guns + quantity, paid or
+  unpaid, priority and when it was opened. **＋ New order** opens a real Discord
+  ticket (pick a type + optional customer, items, quantity, notes) exactly like
+  the in-Discord panel, and you can toggle **Mark paid / unpaid** per order.
 
 Every change applies to Discord live.
 

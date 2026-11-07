@@ -481,6 +481,105 @@ async def _close_ticket(
     )
 
 
+async def create_order(
+    guild: "discord.Guild",
+    store: dict,
+    type_name: str,
+    owner: "discord.Member | None",
+    guns: str,
+    quantity: str,
+    notes: str,
+    *,
+    fallback_channel=None,
+    actor=None,
+) -> dict:
+    """Open a ticket: make the private channel, record the order, post the order
+    card (with its buttons), and log it. Shared by the Discord order modal and
+    the website's 'new order' button. Returns {ok, order, channel} or
+    {ok: False, error}. `owner` is the customer the ticket is for."""
+    me = guild.me
+    if me is None or not me.guild_permissions.manage_channels:
+        return {"ok": False, "error": "I need the **Manage Channels** permission to open tickets."}
+
+    ttype = _find_ticket_type(store, type_name)
+    oid = _new_order_id(store)
+
+    overwrites = {
+        guild.default_role: discord.PermissionOverwrite(view_channel=False),
+        me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
+    }
+    if owner is not None:
+        overwrites[owner] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+    lead = _leadership_role(guild, store)
+    if lead is not None:
+        overwrites[lead] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+    category = None
+    if ttype and ttype.get("category_id"):
+        category = guild.get_channel(ttype["category_id"])
+    if category is None and store.get("ticket_category_id"):
+        category = guild.get_channel(store["ticket_category_id"])
+    if category is None and fallback_channel is not None:
+        category = fallback_channel.category
+
+    try:
+        channel = await guild.create_text_channel(
+            f"{_slug(type_name)}-{oid}",
+            overwrites=overwrites,
+            category=category,
+            reason=f"{type_name} order" + (f" by {owner}" if owner is not None else " (website)"),
+        )
+    except discord.Forbidden:
+        return {"ok": False, "error": "Couldn't open a channel — check my Manage Channels permission and role position."}
+    except discord.HTTPException:
+        return {"ok": False, "error": "Something went wrong opening the ticket channel."}
+
+    order = {
+        "id": oid,
+        "type": type_name,
+        "user_id": owner.id if owner is not None else None,
+        "guns": (guns or "").strip(),
+        "quantity": (quantity or "").strip(),
+        "notes": (notes or "").strip(),
+        "paid": False,
+        "status": "open",
+        "claimed_by": None,
+        "channel_id": channel.id,
+        "created_at": now_stamp(),
+        "created_ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
+    }
+    store["orders"].append(order)
+    save_data(DATA)
+
+    ping = ((f"<@{owner.id}>" if owner is not None else "") + (f" {lead.mention}" if lead else "")).strip()
+    try:
+        msg = await _send_card(
+            channel,
+            _order_cards(order, guild),
+            OrderTicketView,
+            header=ping or None,
+            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        )
+        if msg is not None:
+            order["message_id"] = msg.id
+            save_data(DATA)
+    except discord.HTTPException:
+        pass
+
+    await send_log(
+        guild, store,
+        f"🆕 New **{type_name}** ticket opened" + (" via the website" if owner is None or actor is None else "") + ".",
+        category="tickets", actor=actor, channel_ctx=channel,
+        fields=[
+            ("Order", f"#{oid}", True),
+            ("Type", type_name, True),
+            ("Items", order["guns"] or "—", False),
+            ("Quantity", order["quantity"] or "—", True),
+        ],
+    )
+    return {"ok": True, "order": order, "channel": channel}
+
+
 class OrderModal(discord.ui.Modal):
     def __init__(self, ticket_type: str) -> None:
         super().__init__(title=f"{ticket_type} Order"[:45])
@@ -511,108 +610,18 @@ class OrderModal(discord.ui.Modal):
         # Ack immediately — creating the channel is an API call that can take
         # longer than Discord's 3s window, which would otherwise 404 the modal.
         await interaction.response.defer(ephemeral=True)
-        guild = interaction.guild
-        me = guild.me
-        if not me.guild_permissions.manage_channels:
-            await interaction.followup.send(
-                "I can't open a ticket — I need the **Manage Channels** permission. "
-                "Tell staff.",
-                ephemeral=True,
-            )
-            return
-
         store = guild_store(DATA, interaction.guild_id)
-        ttype = _find_ticket_type(store, self.ticket_type)
-        oid = _new_order_id(store)
-
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(view_channel=False),
-            interaction.user: discord.PermissionOverwrite(
-                view_channel=True, send_messages=True
-            ),
-            me: discord.PermissionOverwrite(view_channel=True, send_messages=True),
-        }
-        lead = _leadership_role(guild, store)
-        if lead is not None:
-            overwrites[lead] = discord.PermissionOverwrite(
-                view_channel=True, send_messages=True
-            )
-
-        # place the ticket under: the type's own category → the default ticket
-        # category → the panel channel's category
-        category = None
-        if ttype and ttype.get("category_id"):
-            category = guild.get_channel(ttype["category_id"])
-        if category is None and store.get("ticket_category_id"):
-            category = guild.get_channel(store["ticket_category_id"])
-        if category is None and interaction.channel is not None:
-            category = interaction.channel.category
-
-        try:
-            channel = await guild.create_text_channel(
-                f"{_slug(self.ticket_type)}-{oid}",
-                overwrites=overwrites,
-                category=category,
-                reason=f"{self.ticket_type} order by {interaction.user}",
-            )
-        except discord.Forbidden:
-            await interaction.followup.send(
-                "I couldn't open a ticket channel — check my **Manage Channels** "
-                "permission and role position.",
-                ephemeral=True,
-            )
-            return
-        except discord.HTTPException:
-            await interaction.followup.send(
-                "Something went wrong opening the ticket.", ephemeral=True
-            )
-            return
-
-        order = {
-            "id": oid,
-            "type": self.ticket_type,
-            "user_id": interaction.user.id,
-            "guns": self.guns.value.strip(),
-            "quantity": self.quantity.value.strip(),
-            "notes": self.notes.value.strip(),
-            "paid": False,
-            "status": "open",
-            "claimed_by": None,
-            "channel_id": channel.id,
-            "created_at": now_stamp(),
-            "created_ts": int(datetime.datetime.now(datetime.timezone.utc).timestamp()),
-        }
-        store["orders"].append(order)
-        save_data(DATA)
-
-        ping = f"<@{interaction.user.id}>" + (f" {lead.mention}" if lead else "")
-        msg = await _send_card(
-            channel,
-            _order_cards(order, guild),
-            OrderTicketView,
-            header=ping,
-            allowed_mentions=discord.AllowedMentions(users=True, roles=True),
+        res = await create_order(
+            interaction.guild, store, self.ticket_type, interaction.user,
+            self.guns.value, self.quantity.value, self.notes.value,
+            fallback_channel=interaction.channel, actor=interaction.user,
         )
-        order["message_id"] = msg.id
-        save_data(DATA)
-
+        if not res["ok"]:
+            await interaction.followup.send(res["error"], ephemeral=True)
+            return
         await interaction.followup.send(
-            f"Your {self.ticket_type} ticket is open: {channel.mention} ✅",
+            f"Your {self.ticket_type} ticket is open: {res['channel'].mention} ✅",
             ephemeral=True,
-        )
-        await send_log(
-            guild,
-            store,
-            f"🆕 New **{self.ticket_type}** ticket opened.",
-            category="tickets",
-            actor=interaction.user,
-            channel_ctx=channel,
-            fields=[
-                ("Order", f"#{oid}", True),
-                ("Type", self.ticket_type, True),
-                ("Items", order["guns"] or "—", False),
-                ("Quantity", order["quantity"] or "—", True),
-            ],
         )
 
 

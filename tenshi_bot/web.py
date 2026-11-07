@@ -755,6 +755,42 @@ def _eois_list(guild: "discord.Guild", store: dict) -> list[dict]:
     return out
 
 
+_ORDER_PRIO = {"urgent": 0, "high": 1, "normal": 2, "low": 3}
+
+
+def _orders_list(guild: "discord.Guild", store: dict) -> list[dict]:
+    """All ticket orders for the website — open first, then by priority, newest
+    first — with the customer, items/guns, quantity, paid state and channel."""
+    emoji_by_type = {t["name"]: (t.get("emoji") or "🎫") for t in store.get("ticket_types", [])}
+    out = []
+    for o in store.get("orders", []):
+        uid = o.get("user_id")
+        m = guild.get_member(uid) if uid else None
+        out.append(
+            {
+                "id": o.get("id"),
+                "type": o.get("type") or "Order",
+                "emoji": emoji_by_type.get(o.get("type"), "🎫"),
+                "customer": m.display_name if m is not None else (f"User {uid}" if uid else "—"),
+                "avatar": str(m.display_avatar.url) if m is not None else "",
+                "guns": o.get("guns") or "",
+                "quantity": o.get("quantity") or "",
+                "notes": o.get("notes") or "",
+                "paid": bool(o.get("paid")),
+                "status": o.get("status", "open"),
+                "priority": o.get("priority", "normal"),
+                "created_ts": o.get("created_ts"),
+                "channel_id": str(o.get("channel_id") or ""),
+            }
+        )
+    out.sort(key=lambda x: (x["status"] != "open", _ORDER_PRIO.get(x["priority"], 2), -(x["created_ts"] or 0)))
+    return out
+
+
+def _ticket_types(store: dict) -> list[dict]:
+    return [{"name": t["name"], "emoji": t.get("emoji") or "🎫"} for t in store.get("ticket_types", [])]
+
+
 async def _remove_from_roster(
     guild: "discord.Guild", store: dict, user_id: int, actor: str = "website"
 ) -> dict:
@@ -1284,6 +1320,101 @@ async def _h_wars(request):
     return _aioweb.json_response({"wars": _wars_list(store)})
 
 
+async def _h_orders(request):
+    guild = _guild_from(request.query.get("guild"))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    return _aioweb.json_response(
+        {
+            "orders": _orders_list(guild, store),
+            "types": _ticket_types(store),
+            "open": bool(store.get("tickets_open", True)),
+        }
+    )
+
+
+async def _h_order_create(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    type_name = (body.get("type") or "").strip()
+    from .tickets import create_order, _find_ticket_type
+    tt = _find_ticket_type(store, type_name)
+    if tt is None:
+        return _aioweb.json_response({"error": "Pick a valid ticket type."}, status=400)
+    # customer: an optional member id; otherwise the order has no assigned customer
+    owner = None
+    cust = body.get("user_id")
+    if cust:
+        try:
+            owner = guild.get_member(int(cust))
+        except (TypeError, ValueError):
+            owner = None
+    res = await create_order(
+        guild, store, tt["name"], owner,
+        body.get("guns") or "", body.get("quantity") or "", body.get("notes") or "",
+        actor=_web_actor(request, guild),
+    )
+    if not res.get("ok"):
+        return _aioweb.json_response({"error": res.get("error", "Couldn't open the ticket.")}, status=400)
+    order, channel = res["order"], res["channel"]
+    try:
+        who = f" for <@{owner.id}>" if owner is not None else ""
+        await send_log(
+            guild, store,
+            f"🌐 New **{tt['name']}** order `#{order['id']}` created via the website{who}.",
+            category="web", actor=_web_actor(request, guild),
+        )
+    except discord.HTTPException:
+        pass
+    return _aioweb.json_response({"ok": True, "id": order["id"], "channel_id": str(channel.id)})
+
+
+async def _h_order_paid(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    try:
+        oid = int(body.get("order_id"))
+    except (TypeError, ValueError):
+        return _aioweb.json_response({"error": "Bad order_id."}, status=400)
+    store = guild_store(DATA, guild.id)
+    order = next((o for o in store.get("orders", []) if o.get("id") == oid), None)
+    if order is None:
+        return _aioweb.json_response({"error": "Order not found."}, status=404)
+    paid = bool(body.get("paid", True))
+    order["paid"] = paid
+    save_data(DATA)
+    try:
+        await send_log(
+            guild, store,
+            f"🌐 Order `#{oid}` marked **{'paid' if paid else 'unpaid'}** via the website.",
+            category="web", actor=_web_actor(request, guild),
+        )
+    except discord.HTTPException:
+        pass
+    return _aioweb.json_response({"ok": True, "paid": paid})
+
+
 async def _h_strikes(request):
     guild = _guild_from(request.query.get("guild"))
     if guild is None:
@@ -1450,6 +1581,9 @@ async def start_web_server() -> None:
             _aioweb.post("/api/stash_remove", _h_stash_remove),
             _aioweb.post("/api/stash_scan", _h_stash_scan),
             _aioweb.get("/api/wars", _h_wars),
+            _aioweb.get("/api/orders", _h_orders),
+            _aioweb.post("/api/order_create", _h_order_create),
+            _aioweb.post("/api/order_paid", _h_order_paid),
             _aioweb.get("/api/strikes", _h_strikes),
             _aioweb.post("/api/strike_remove", _h_strike_remove),
             _aioweb.post("/api/strike_clear", _h_strike_clear),
@@ -1755,6 +1889,37 @@ _PAGE_HTML = """
   .toolbar input:focus,#search:focus{outline:none;border-color:rgba(244,63,94,.5);
     box-shadow:0 0 0 3px rgba(225,29,72,.14)}
   .ranklabel{color:#ff9db0}
+
+  /* ===== orders / tickets tab ===== */
+  .obar{margin:2px 0 14px}
+  .olist{display:flex;flex-direction:column;gap:11px}
+  .ocard{background:linear-gradient(180deg,rgba(26,16,22,.72),rgba(14,14,19,.72));
+    border:1px solid var(--line);border-radius:16px;padding:15px 17px;box-shadow:0 8px 26px rgba(0,0,0,.35)}
+  .ocard.dim{opacity:.6}
+  .ohead{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
+  .otitle{font-weight:700;font-size:15px}
+  .otitle .oid{color:var(--mute);font-family:ui-monospace,monospace;font-size:12px;font-weight:600}
+  .obadges{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .obadge{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;border:1px solid var(--line)}
+  .obadge.paid{background:rgba(34,197,94,.15);color:#86efac;border-color:rgba(34,197,94,.4)}
+  .obadge.unpaid{background:rgba(239,68,68,.14);color:#fca5a5;border-color:rgba(239,68,68,.38)}
+  .obadge.closed{background:rgba(255,255,255,.05);color:var(--mute)}
+  .opill{font-size:11px;font-weight:700;padding:2px 9px;border-radius:999px;background:rgba(255,255,255,.05);
+    border:1px solid var(--line);color:var(--mute)}
+  .opill.urgent{color:#fca5a5;border-color:rgba(239,68,68,.4)}
+  .opill.high{color:#fdba74;border-color:rgba(245,158,11,.4)}
+  .ometa{display:flex;flex-wrap:wrap;gap:6px 16px;margin-top:8px;font-size:13px;color:var(--mute)}
+  .ometa b{color:var(--text);font-weight:600}
+  .oactions{margin-top:11px;display:flex;align-items:center;gap:10px}
+  .oactions button{padding:7px 13px;font-size:13px;border-radius:11px}
+  .oform{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
+  .ofrow{display:flex;gap:10px;flex-wrap:wrap}
+  .ofrow>select,.ofrow>input{flex:1;min-width:160px}
+  .oform select,.oform input,.oform textarea{width:100%;padding:11px 13px;border-radius:12px;
+    background:rgba(0,0,0,.3);border:1px solid var(--line);color:var(--text);font:inherit;font-size:14px}
+  .oform textarea{resize:vertical}
+  .oform select:focus,.oform input:focus,.oform textarea:focus{outline:none;border-color:rgba(244,63,94,.5);
+    box-shadow:0 0 0 3px rgba(225,29,72,.14)}
 </style>
 </head>
 <body>
@@ -1788,6 +1953,7 @@ _PAGE_HTML = """
     <div class="tab" data-tab="stash" onclick="setTab('stash')">📦 Stash</div>
     <div class="tab" data-tab="wars" onclick="setTab('wars')">⚔️ Wars</div>
     <div class="tab" data-tab="eois" onclick="setTab('eois')">📨 EOIs</div>
+    <div class="tab" data-tab="orders" onclick="setTab('orders')">🎫 Orders</div>
   </div>
 
   <div class="toolbar">
@@ -1802,6 +1968,7 @@ _PAGE_HTML = """
   <div id="stashView" style="display:none"></div>
   <div id="warsView" style="display:none"></div>
   <div id="eoisView" style="display:none"></div>
+  <div id="ordersView" style="display:none"></div>
 </div>
 
 <footer>Only people with the website-access role can open this · changes apply to Discord live · 天使</footer>
@@ -1867,10 +2034,10 @@ async function reload(){
   const sel=$("guildSel");if(sel&&sel.value)STATE.guild=sel.value;
   const g=encodeURIComponent(STATE.guild);
   try{
-    const [ov,ro,ko,stn,wa,eo,sk]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g),api("/api/stash?guild="+g),api("/api/wars?guild="+g),api("/api/eois?guild="+g),api("/api/strikes?guild="+g)]);
+    const [ov,ro,ko,stn,wa,eo,sk,od]=await Promise.all([api("/api/overview?guild="+g),api("/api/roster?guild="+g),api("/api/kos?guild="+g),api("/api/stash?guild="+g),api("/api/wars?guild="+g),api("/api/eois?guild="+g),api("/api/strikes?guild="+g),api("/api/orders?guild="+g)]);
     $("sub").textContent=ro.guild?.name||"Roster";
     renderStats(ov.overview);
-    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];STATE.stash=stn.items||[];STATE.stashTotal=stn.total||0;STATE.wars=wa.wars||[];STATE.eois=eo.eois||[];STATE.strikes=sk.members||[];STATE.strikeLimit=sk.limit||3;
+    STATE.members=ro.members||[];STATE.ranks=ro.ranks||[];STATE.kos=ko.members||[];STATE.rank_order=ro.rank_order||[];STATE.stash=stn.items||[];STATE.stashTotal=stn.total||0;STATE.wars=wa.wars||[];STATE.eois=eo.eois||[];STATE.strikes=sk.members||[];STATE.strikeLimit=sk.limit||3;STATE.orders=od.orders||[];STATE.ticketTypes=od.types||[];STATE.ticketsOpen=od.open!==false;
     render();
   }catch(e){ if(e.status===401||e.status===403) return boot(); toast(e.message||"Failed to load.","err"); }
 }
@@ -1888,10 +2055,10 @@ function renderStats(o){
 }
 function setTab(t){
   TAB=t;document.querySelectorAll(".tab").forEach(e=>e.classList.toggle("active",e.dataset.tab===t));
-  ["roster","kos","strikes","stash","wars","eois"].forEach(v=>show(v+"View",t===v));
-  $("search").placeholder={roster:"Search members…",kos:"Search KOS…",strikes:"Search struck members…",stash:"Search items…",wars:"Search wars…",eois:"Pending applications"}[t]||"Search…";render();
+  ["roster","kos","strikes","stash","wars","eois","orders"].forEach(v=>show(v+"View",t===v));
+  $("search").placeholder={roster:"Search members…",kos:"Search KOS…",strikes:"Search struck members…",stash:"Search items…",wars:"Search wars…",eois:"Pending applications",orders:"Search orders…"}[t]||"Search…";render();
 }
-function render(){({roster:renderRoster,kos:renderKos,strikes:renderStrikes,stash:renderStash,wars:renderWars,eois:renderEois}[TAB]||renderRoster)();}
+function render(){({roster:renderRoster,kos:renderKos,strikes:renderStrikes,stash:renderStash,wars:renderWars,eois:renderEois,orders:renderOrders}[TAB]||renderRoster)();}
 function renderRoster(){
   const q=$("search").value.toLowerCase();
   let ms=STATE.members.filter(m=>m.name.toLowerCase().includes(q)||(m.rank||"").toLowerCase().includes(q));
@@ -2068,8 +2235,49 @@ async function closeEoi(id,name){
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 async function acceptEoi(id,name){
-  if(!confirm("Force-accept "+name+"? They'll be welcomed and given the roster role regardless of the votes."))return;
+  if(!confirm("Force-accept "+name+"? They'll be welcomed and given the Tenshi role regardless of the votes."))return;
   try{await post("/api/eoi_accept",{guild:STATE.guild,msg_id:id});toast("Accepted "+name,"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
+}
+function orderPrioPill(p){const m={urgent:["🔴","Urgent"],high:["🟠","High"],normal:["🔵","Normal"],low:["🟢","Low"]};const x=m[p]||m.normal;return `<span class="opill ${h(p)}">${x[0]} ${x[1]}</span>`;}
+function renderOrders(){
+  const q=$("search").value.toLowerCase();
+  const all=STATE.orders||[];
+  const os=all.filter(o=>((o.customer||"")+" "+(o.type||"")+" "+(o.guns||"")+" #"+o.id).toLowerCase().includes(q));
+  const openN=all.filter(o=>o.status==="open").length, paidN=all.filter(o=>o.status==="open"&&o.paid).length;
+  $("count").textContent=openN+" open · "+paidN+" paid";
+  const types=STATE.ticketTypes||[];
+  const typeOpts=types.length?types.map(t=>`<option value="${h(t.name)}">${h(t.emoji+" "+t.name)}</option>`).join(""):'<option value="">No ticket types — add one with /ticket type_add</option>';
+  const custOpts='<option value="">— no customer —</option>'+(STATE.members||[]).map(m=>`<option value="${h(m.id)}">${h(m.name)}</option>`).join("");
+  const form=`<div class="ocard oform" id="oform" style="display:none">
+    <div class="ofrow"><select id="of_type">${typeOpts}</select><select id="of_cust">${custOpts}</select></div>
+    <div class="ofrow"><input id="of_guns" placeholder="Items / guns (e.g. 2x AK, 1x pistol)"><input id="of_qty" placeholder="Quantity (e.g. 3)"></div>
+    <textarea id="of_notes" rows="2" placeholder="Notes — delivery spot, timing, budget…"></textarea>
+    <div class="ofrow" style="justify-content:flex-end;gap:8px"><button class="ghost" onclick="toggleOrderForm(false)">Cancel</button><button class="brand-btn" onclick="createOrder()" ${types.length?"":"disabled"}>Create order &amp; open ticket</button></div></div>`;
+  const header=`<div class="obar"><button class="brand-btn" onclick="toggleOrderForm()">＋ New order</button></div>`;
+  if(!os.length){$("ordersView").innerHTML=header+form+'<div class="empty">No orders yet. Hit <b>＋ New order</b> to open one. 📭</div>';return;}
+  const rows=os.map(o=>{
+    const paid=o.paid?'<span class="obadge paid">🟢 Paid</span>':'<span class="obadge unpaid">🔴 Unpaid</span>';
+    const st=o.status!=="open"?'<span class="obadge closed">🔒 Closed</span>':"";
+    const items=[o.guns?`<b>${h(o.guns)}</b>`:"",o.quantity?`× ${h(o.quantity)}`:""].filter(Boolean).join(" ");
+    return `<div class="ocard${o.status!=="open"?" dim":""}">
+      <div class="ohead"><div class="otitle">${h(o.emoji)} ${h(o.type)} <span class="oid">#${h(String(o.id))}</span></div>
+        <div class="obadges">${paid}${st}${orderPrioPill(o.priority)}</div></div>
+      <div class="ometa"><span>👤 ${h(o.customer)}</span>${items?`<span>🔫 ${items}</span>`:""}${o.created_ts?`<span>🕒 ${ago(o.created_ts)}</span>`:""}</div>
+      ${o.notes?`<div class="reason">${h(o.notes)}</div>`:""}
+      <div class="oactions">${o.status==="open"?`<button class="${o.paid?"ghost":"brand-btn"}" onclick="markOrderPaid('${h(String(o.id))}',${o.paid?"false":"true"})">${o.paid?"Mark unpaid":"Mark paid"}</button>`:""}</div></div>`;
+  }).join("");
+  $("ordersView").innerHTML=header+form+`<div class="olist">${rows}</div>`;
+}
+function toggleOrderForm(on){const f=$("oform");if(!f)return;const open=on===undefined?f.style.display==="none":on;f.style.display=open?"":"none";}
+async function createOrder(){
+  const type=($("of_type")||{}).value||"";if(!type)return toast("Pick a ticket type","err");
+  try{const r=await post("/api/order_create",{guild:STATE.guild,type,user_id:($("of_cust")||{}).value||"",guns:($("of_guns")||{}).value||"",quantity:($("of_qty")||{}).value||"",notes:($("of_notes")||{}).value||""});
+    toast("Order #"+r.id+" created — ticket opened","ok");await reload();setTab("orders");}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
+}
+async function markOrderPaid(id,paid){
+  try{await post("/api/order_paid",{guild:STATE.guild,order_id:id,paid});toast("Order #"+id+(paid?" marked paid":" marked unpaid"),"ok");await reload();}
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 boot();
