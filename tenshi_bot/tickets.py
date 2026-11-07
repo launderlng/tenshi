@@ -629,13 +629,15 @@ class TicketPanelSelect(discord.ui.Select):
     """Dropdown of configured ticket types; opens the order modal for the pick."""
 
     def __init__(self, options: list[discord.SelectOption] | None = None) -> None:
+        empty = not options
         opts = options or [discord.SelectOption(label="—", value="0")]
         super().__init__(
             custom_id="ticket:open",
-            placeholder="Open a ticket…",
+            placeholder="No active orders right now" if empty else "Open a ticket…",
             min_values=1,
             max_values=1,
             options=opts,
+            disabled=empty,
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -845,23 +847,31 @@ def _build_ticket_panel(guild, store, message: str | None = None):
             discord.SelectOption(label=t["name"][:100], value=t["name"], emoji=t.get("emoji") or None)
         )
         menu_lines.append(f"{em}  **{t['name']}**")
-    embed = discord.Embed(
-        title="🎫  Open a Ticket",
-        description=message
-        or "Need hardware or a job done? Pick an option from the menu below and a "
-        "**private ticket** opens just for you and staff.",
-        color=EMBED_COLOR,
-    )
-    embed.add_field(name="What we handle", value="\n".join(menu_lines) or "—", inline=False)
-    embed.add_field(
-        name="How it works",
-        value=(
-            "1️⃣  Pick a category below\n"
-            "2️⃣  Tell us what you want & how many\n"
-            "3️⃣  A private channel opens — staff take it from there"
-        ),
-        inline=False,
-    )
+    if options:
+        embed = discord.Embed(
+            title="🎫  Open a Ticket",
+            description=message
+            or "Need hardware or a job done? Pick an option from the menu below and a "
+            "**private ticket** opens just for you and staff.",
+            color=EMBED_COLOR,
+        )
+        embed.add_field(name="What we handle", value="\n".join(menu_lines), inline=False)
+        embed.add_field(
+            name="How it works",
+            value=(
+                "1️⃣  Pick a category below\n"
+                "2️⃣  Tell us what you want & how many\n"
+                "3️⃣  A private channel opens — staff take it from there"
+            ),
+            inline=False,
+        )
+    else:
+        # No order types configured — show a clean "nothing open" state.
+        embed = discord.Embed(
+            title="🎫  Orders",
+            description="🔕  **No active orders right now.**\nCheck back soon — order types will appear here when they're open.",
+            color=MUTED,
+        )
     if getattr(guild, "icon", None):
         embed.set_thumbnail(url=guild.icon.url)
     _brand(embed, guild, "Tickets are private · one click to open")

@@ -2096,6 +2096,22 @@ _PAGE_HTML = """
     background:rgba(0,0,0,.25);border:1px solid var(--line);font-size:14px}
   .trow .srm{cursor:pointer;color:var(--mute);font-weight:800;opacity:.6;transition:.15s}
   .trow .srm:hover{opacity:1;color:#fca5a5}
+  /* order summary panel */
+  .osum{margin-bottom:14px;display:flex;flex-direction:column;gap:13px}
+  .osum-h{font-weight:700}
+  .osum-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+  .osum-tiles>div{background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+  .osum-tiles b{display:block;font-size:24px;font-weight:800;font-variant-numeric:tabular-nums;color:#ff9db0;
+    text-shadow:0 0 20px rgba(244,63,94,.3)}
+  .osum-tiles span{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute)}
+  .otwrap{overflow-x:auto}
+  .otable{width:100%;border-collapse:collapse;font-size:13.5px}
+  .otable th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--mute);
+    padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  .otable td{padding:9px 10px;border-bottom:1px solid rgba(255,255,255,.04);vertical-align:top}
+  .otable tbody tr:last-child td{border-bottom:none}
+  .otable td b{color:var(--text);font-weight:600}
+  @media(max-width:560px){.osum-tiles{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
@@ -2439,7 +2455,17 @@ function renderOrders(){
   const closedN=all.filter(o=>o.status!=="open").length;
   const clearBtn=closedN?`<button class="ghost" onclick="clearClosedOrders(${closedN})">🧹 Clear ${closedN} closed</button>`:"";
   const header=`<div class="obar"><button class="brand-btn" onclick="toggleOrderForm()">＋ New order</button><button class="ghost" onclick="toggleTypes()">⚙ Order types</button>${clearBtn}</div>`;
-  if(!os.length){$("ordersView").innerHTML=header+form+typesPanel+'<div class="empty">No orders yet. Hit <b>＋ New order</b> to open one. 📭</div>';return;}
+  // overall summary of what's being ordered (all open orders)
+  const open=all.filter(o=>o.status==="open");
+  const units=open.reduce((s,o)=>s+(parseInt(o.quantity,10)||0),0);
+  const paidO=open.filter(o=>o.paid).length;
+  let overview="";
+  if(open.length){
+    const tiles=`<div class="osum-tiles"><div><b>${open.length}</b><span>open orders</span></div><div><b>${units}</b><span>units ordered</span></div><div><b>${paidO}</b><span>paid</span></div><div><b>${open.length-paidO}</b><span>unpaid</span></div></div>`;
+    const trows=open.slice().sort((a,b)=>(a.paid-b.paid)||((b.created_ts||0)-(a.created_ts||0))).map(o=>`<tr><td>${h(o.customer)}${o.username?` <span class="muted">@${h(o.username)}</span>`:""}</td><td>${h(o.emoji)} ${h(o.type)}</td><td><b>${h(o.guns||"—")}</b></td><td>${h(o.quantity||"—")}</td><td>${o.paid?'<span class="obadge paid">🟢 Paid</span>':'<span class="obadge unpaid">🔴 Unpaid</span>'}</td></tr>`).join("");
+    overview=`<div class="ocard osum"><div class="osum-h">📊 Order summary <span class="muted" style="font-weight:400;font-size:12px">— who ordered what &amp; who's paid</span></div>${tiles}<div class="otwrap"><table class="otable"><thead><tr><th>Customer</th><th>Type</th><th>Ordered</th><th>Qty</th><th>Paid</th></tr></thead><tbody>${trows}</tbody></table></div></div>`;
+  }
+  if(!os.length){$("ordersView").innerHTML=header+form+typesPanel+overview+'<div class="empty">No matching orders. 📭</div>';return;}
   // group by category (ticket type) — an overall list of what the orders are
   const PR={urgent:0,high:1,normal:2,low:3};
   const groups={};
@@ -2452,7 +2478,7 @@ function renderOrders(){
     const head=`<div class="ranklabel">${h(emoji)} ${h(ty)}<span class="pill">${op} open · ${paidG} paid · ${list.length} total</span></div>`;
     return head+`<div class="olist">${list.map(orderCard).join("")}</div>`;
   }).join("");
-  $("ordersView").innerHTML=header+form+typesPanel+sections;
+  $("ordersView").innerHTML=header+form+typesPanel+overview+sections;
 }
 function orderCard(o){
   const paid=o.paid?'<span class="obadge paid">🟢 Paid</span>':'<span class="obadge unpaid">🔴 Unpaid</span>';
