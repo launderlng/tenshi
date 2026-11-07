@@ -22,6 +22,37 @@ def _new_order_id(store: dict[str, Any]) -> int:
     return oid
 
 
+def _compose_channel_name(oid, type_name: str, paid: bool, customer_name: str | None) -> str:
+    """Ticket channel name: a ✅/❌ paid marker, the type, the customer and the id,
+    e.g. '❌-ppsh-kenji-14' → '✅-ppsh-kenji-14' once paid."""
+    mark = "✅" if paid else "❌"
+    ttype = _slug(type_name or "ticket")
+    who = _slug(customer_name) if customer_name else "order"
+    return f"{mark}-{ttype}-{who}-{oid}"[:100]
+
+
+def _order_channel_name(order: dict, guild) -> str:
+    uid = order.get("user_id")
+    m = guild.get_member(uid) if uid else None
+    cust = m.display_name if m is not None else None
+    return _compose_channel_name(order.get("id"), order.get("type"), bool(order.get("paid")), cust)
+
+
+async def _rename_order_channel(guild, order: dict) -> None:
+    """Rename the order's channel to match its customer + paid status. Best-effort
+    — Discord rate-limits renames to 2 / 10 min, so a failure is ignored."""
+    ch = guild.get_channel(order.get("channel_id") or 0)
+    if ch is None:
+        return
+    name = _order_channel_name(order, guild)
+    if getattr(ch, "name", None) == name:
+        return
+    try:
+        await ch.edit(name=name, reason="Ticket name / paid status update")
+    except discord.HTTPException:
+        pass
+
+
 def _find_order_by_channel(store: dict[str, Any], channel_id: int) -> dict | None:
     for o in store["orders"]:
         if o.get("channel_id") == channel_id:
@@ -522,9 +553,11 @@ async def create_order(
     if category is None and fallback_channel is not None:
         category = fallback_channel.category
 
+    cust_name = owner.display_name if owner is not None else None
+    chname = _compose_channel_name(oid, type_name, False, cust_name)
     try:
         channel = await guild.create_text_channel(
-            f"{_slug(type_name)}-{oid}",
+            chname,
             overwrites=overwrites,
             category=category,
             reason=f"{type_name} order" + (f" by {owner}" if owner is not None else " (website)"),
@@ -769,6 +802,7 @@ class OrderTicketView(discord.ui.View):
         await _edit_card(
             interaction.message, _order_cards(order, interaction.guild), OrderTicketView
         )
+        await _rename_order_channel(interaction.guild, order)
         await interaction.followup.send(
             f"Order #{order['id']} marked **paid**. 💰", ephemeral=True
         )

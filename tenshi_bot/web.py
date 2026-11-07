@@ -1454,6 +1454,11 @@ async def _h_order_paid(request):
     order["paid"] = paid
     save_data(DATA)
     try:
+        from .tickets import _rename_order_channel
+        await _rename_order_channel(guild, order)
+    except discord.HTTPException:
+        pass
+    try:
         await send_log(
             guild, store,
             f"🌐 Order `#{oid}` marked **{'paid' if paid else 'unpaid'}** via the website.",
