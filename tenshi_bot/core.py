@@ -1069,9 +1069,10 @@ async def _close_eoi(
     guild: discord.Guild, store: dict[str, Any], mid: int, rec: dict, force: str | None = None
 ) -> None:
     """Tally votes, lock the EOI post, and — if it passed — welcome them into
-    the gang in the EOI channel (+ roster role). Denials are quiet: post is
-    marked and the applicant gets a DM. `force` overrides the vote result:
-    "accept" always passes, "deny" always fails."""
+    the gang in the EOI channel and give them the base Tenshi rank role (falling
+    back to the roster role only if no Tenshi rank is configured). Denials are
+    quiet: post is marked and the applicant gets a DM. `force` overrides the vote
+    result: "accept" always passes, "deny" always fails."""
     ch = guild.get_channel(rec.get("channel_id") or 0)
     if ch is None:
         return
@@ -1130,7 +1131,14 @@ async def _close_eoi(
             )
         except discord.HTTPException:
             pass
-        role_id = store.get("roster_role_id")
+        # On accept, give the base "Tenshi" rank role (not the generic roster
+        # role). Fall back to the roster role only if no Tenshi rank is set up.
+        tenshi_rid = next(
+            (r.get("role_id") for r in store.get("ranks", [])
+             if r.get("role_id") and r.get("name", "").strip().lower() in ("tenshi", "tenchi")),
+            None,
+        )
+        role_id = tenshi_rid or store.get("roster_role_id")
         role = guild.get_role(role_id) if role_id else None
         if member is not None and role is not None:
             try:
