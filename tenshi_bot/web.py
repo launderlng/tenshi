@@ -274,7 +274,7 @@ def _clear_strikes(store: dict, user_id: int) -> dict:
     return {"ok": True, "cleared": before - len(store["strikes"])}
 
 
-async def _set_gang_role(guild, store, user_id: int, role_id: int, action: str) -> dict:
+async def _set_gang_role(guild, store, user_id: int, role_id: int, action: str, actor=None) -> dict:
     """Add or remove ONE gang role (roster/rank) on a member. Refuses anything
     that isn't a gang role, and anything above the bot."""
     if role_id not in _gang_role_ids(guild, store):
@@ -303,13 +303,18 @@ async def _set_gang_role(guild, store, user_id: int, role_id: int, action: str) 
     save_data(DATA)
     await send_log(
         guild, store,
-        f"🌐 {member.mention} — role **{role.name}** {action}ed via the website.",
-        category="web",
+        f"🌐 Role **{role.name}** {action}ed for {member.mention} via the website.",
+        category="web", actor=actor,
+        fields=[
+            ("Member", member.mention, True),
+            ("Role", role.name, True),
+            ("Action", "Added" if action == "add" else "Removed", True),
+        ],
     )
     return {"ok": True, "action": action, "role": role.name}
 
 
-async def _remove_kos(guild, store, user_id: int) -> dict:
+async def _remove_kos(guild, store, user_id: int, actor=None) -> dict:
     before = len(store.get("kos", []))
     store["kos"] = [k for k in store.get("kos", []) if k.get("id") != user_id]
     was_listed = len(store["kos"]) != before
@@ -330,7 +335,11 @@ async def _remove_kos(guild, store, user_id: int) -> dict:
             pass
     save_data(DATA)
     name = member.mention if member is not None else f"`{user_id}`"
-    await send_log(guild, store, f"🌐 {name} taken off KOS via the website.", category="web")
+    await send_log(
+        guild, store, f"🌐 {name} taken off KOS via the website.",
+        category="web", actor=actor,
+        fields=[("Member", name, True), ("KOS role removed", "Yes" if role_removed else "No", True)],
+    )
     return {
         "ok": True,
         "was_listed": was_listed,
@@ -794,7 +803,7 @@ def _ticket_types(store: dict) -> list[dict]:
 
 
 async def _remove_from_roster(
-    guild: "discord.Guild", store: dict, user_id: int, actor: str = "website"
+    guild: "discord.Guild", store: dict, user_id: int, actor: str = "website", actor_member=None
 ) -> dict:
     """Drop the member from the stored roster AND strip every gang role from them
     in Discord. Mirrors what /roster remove does, but also clears rank roles so
@@ -834,8 +843,9 @@ async def _remove_from_roster(
         guild,
         store,
         f"🌐 {name} removed from the roster via the website.",
-        category="web",
+        category="web", actor=actor_member,
         fields=[
+            ("Member", name, True),
             ("Roles removed", ", ".join(removed_roles) or "—", False),
             ("Couldn't remove", ", ".join(failed_roles) or "—", True),
         ],
@@ -1087,6 +1097,17 @@ async def _h_callback(request):
     guilds = await _accessible_guilds(user["id"])
     if not guilds:
         return _aioweb.Response(text=_DENIED_HTML, status=403, content_type="text/html")
+    uname = user.get("global_name") or user.get("username") or str(user.get("id"))
+    for g in guilds:
+        try:
+            gstore = guild_store(DATA, g.id)
+            gm = g.get_member(int(user["id"]))
+            await send_log(
+                g, gstore, f"🌐 **{uname}** signed in to the website.",
+                category="web", actor=gm,
+            )
+        except (discord.HTTPException, ValueError, KeyError, TypeError):
+            pass
     resp = _aioweb.HTTPFound("/")
     resp.set_cookie(
         _COOKIE, _sign_session(user["id"]), max_age=43200,
@@ -1183,7 +1204,7 @@ async def _h_role(request):
     except (TypeError, ValueError):
         return _aioweb.json_response({"error": "Bad user_id or role_id."}, status=400)
     store = guild_store(DATA, guild.id)
-    result = await _set_gang_role(guild, store, uid, rid, action)
+    result = await _set_gang_role(guild, store, uid, rid, action, actor=_web_actor(request, guild))
     return _aioweb.json_response(result, status=200 if result.get("ok") else 400)
 
 
@@ -1203,7 +1224,7 @@ async def _h_kos_remove(request):
     except (TypeError, ValueError):
         return _aioweb.json_response({"error": "Bad user_id."}, status=400)
     store = guild_store(DATA, guild.id)
-    result = await _remove_kos(guild, store, uid)
+    result = await _remove_kos(guild, store, uid, actor=_web_actor(request, guild))
     return _aioweb.json_response(result)
 
 
@@ -1224,7 +1245,7 @@ async def _h_remove(request):
         return _aioweb.json_response({"error": "Bad user_id."}, status=400)
     store = guild_store(DATA, guild.id)
     actor = _read_session(request.cookies.get(_COOKIE))
-    result = await _remove_from_roster(guild, store, uid, actor=f"user {actor}")
+    result = await _remove_from_roster(guild, store, uid, actor=f"user {actor}", actor_member=_web_actor(request, guild))
     return _aioweb.json_response(result)
 
 
@@ -1256,6 +1277,22 @@ async def _h_stash_set(request):
         store, body.get("item"), body.get("qty"), body.get("mode", "set"),
         body.get("weight"), body.get("image"),
     )
+    if result.get("ok"):
+        item = (body.get("item") or "").strip()
+        mode = body.get("mode", "set")
+        verb = {"add": "added to", "remove": "removed from", "set": "set in"}.get(mode, "updated in")
+        try:
+            await send_log(
+                guild, store, f"🌐 Stash: **{item}** {verb} the stash via the website.",
+                category="web", actor=_web_actor(request, guild),
+                fields=[
+                    ("Item", item or "—", True),
+                    ("Qty", str(body.get("qty", "") or "—"), True),
+                    ("Mode", mode, True),
+                ],
+            )
+        except discord.HTTPException:
+            pass
     return _aioweb.json_response(result, status=200 if result.get("ok") else 400)
 
 
@@ -1271,7 +1308,17 @@ async def _h_stash_remove(request):
     if not ok:
         return _aioweb.json_response({"error": msg}, status=code)
     store = guild_store(DATA, guild.id)
-    return _aioweb.json_response(_stash_remove(store, body.get("item")))
+    item = (body.get("item") or "").strip()
+    result = _stash_remove(store, body.get("item"))
+    if item:
+        try:
+            await send_log(
+                guild, store, f"🌐 Stash: **{item}** removed from the stash via the website.",
+                category="web", actor=_web_actor(request, guild),
+            )
+        except discord.HTTPException:
+            pass
+    return _aioweb.json_response(result)
 
 
 async def _h_stash_scan(request):
@@ -1684,6 +1731,7 @@ async def _web_end_eoi(request, force: str | None):
     store = guild_store(DATA, guild.id)
     if mid not in store.get("eoi_apps", {}):
         return _aioweb.json_response({"error": "That application no longer exists."}, status=404)
+    _app = store.get("eoi_apps", {}).get(mid, {})
     rec = dict(store.get("eoi_timers", {}).get(mid) or {})
     if not rec.get("channel_id"):
         rec["channel_id"] = store.get("eoi_channel_id")
@@ -1696,6 +1744,17 @@ async def _web_end_eoi(request, force: str | None):
         await _close_eoi(guild, store, int(mid), rec, force=force)
     except (discord.HTTPException, ValueError) as exc:
         log.info("web EOI end (force=%s): couldn't edit the post (%s)", force, exc)
+    action = "accepted" if force == "accept" else "denied" if force == "deny" else "closed"
+    _uid = _app.get("user_id")
+    _who = f"<@{_uid}>" if _uid else (_app.get("ign") or "applicant")
+    try:
+        await send_log(
+            guild, store, f"🌐 EOI for {_who} **{action}** via the website.",
+            category="web", actor=_web_actor(request, guild),
+            fields=[("Applicant", _who, True), ("Result", action.title(), True)],
+        )
+    except discord.HTTPException:
+        pass
     return _aioweb.json_response({"ok": True})
 
 
