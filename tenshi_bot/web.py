@@ -1454,7 +1454,8 @@ async def _h_order_paid(request):
     order["paid"] = paid
     save_data(DATA)
     try:
-        from .tickets import _rename_order_channel
+        from .tickets import _rename_order_channel, _refresh_order_card
+        await _refresh_order_card(guild, order)
         await _rename_order_channel(guild, order)
     except discord.HTTPException:
         pass

@@ -589,7 +589,7 @@ async def create_order(
         msg = await _send_card(
             channel,
             _order_cards(order, guild),
-            OrderTicketView,
+            lambda: OrderTicketView(order),
             header=ping or None,
             allowed_mentions=discord.AllowedMentions(users=True, roles=True),
         )
@@ -730,10 +730,18 @@ async def _reset_panel_select(interaction: discord.Interaction, store: dict) -> 
 
 
 class OrderTicketView(discord.ui.View):
-    """Staff buttons on a ticket: Claim, Mark Paid and Close."""
+    """Staff buttons on a ticket: Claim, Mark Paid/Unpaid, Priority and Close.
+    Pass the order so the paid button shows the right label/colour."""
 
-    def __init__(self) -> None:
+    def __init__(self, order: dict | None = None) -> None:
         super().__init__(timeout=None)
+        if order is not None:
+            for c in self.children:
+                if getattr(c, "custom_id", None) == "order:paid":
+                    if order.get("paid"):
+                        c.label, c.style, c.emoji = "Mark Unpaid", discord.ButtonStyle.secondary, "↩️"
+                    else:
+                        c.label, c.style, c.emoji = "Mark Paid", discord.ButtonStyle.success, "💰"
 
     @discord.ui.button(
         label="Claim",
@@ -758,7 +766,8 @@ class OrderTicketView(discord.ui.View):
         order["claimed_by"] = interaction.user.id
         save_data(DATA)
         await _edit_card(
-            interaction.message, _order_cards(order, interaction.guild), OrderTicketView
+            interaction.message, _order_cards(order, interaction.guild),
+            lambda: OrderTicketView(order),
         )
         verb = "reassigned to" if prev and prev != interaction.user.id else "claimed by"
         await interaction.channel.send(f"🙋 Ticket {verb} {interaction.user.mention}.")
@@ -797,19 +806,21 @@ class OrderTicketView(discord.ui.View):
                 "Couldn't find this order.", ephemeral=True
             )
             return
-        order["paid"] = True
+        order["paid"] = not order.get("paid", False)
+        paid = order["paid"]
         save_data(DATA)
         await _edit_card(
-            interaction.message, _order_cards(order, interaction.guild), OrderTicketView
+            interaction.message, _order_cards(order, interaction.guild),
+            lambda: OrderTicketView(order),
         )
         await _rename_order_channel(interaction.guild, order)
         await interaction.followup.send(
-            f"Order #{order['id']} marked **paid**. 💰", ephemeral=True
+            f"Order #{order['id']} marked **{'paid 💰' if paid else 'unpaid'}**.", ephemeral=True
         )
         await send_log(
             interaction.guild,
             store,
-            f"💰 **{order.get('type', 'order')}** #{order['id']} marked **PAID**.",
+            f"{'💰' if paid else '↩️'} **{order.get('type', 'order')}** #{order['id']} marked **{'PAID' if paid else 'UNPAID'}**.",
             category="orders",
             actor=interaction.user,
             channel_ctx=interaction.channel,
@@ -843,7 +854,7 @@ class OrderTicketView(discord.ui.View):
         await _edit_card(
             interaction.message,
             _order_cards(order, interaction.guild),
-            OrderTicketView,
+            lambda: OrderTicketView(order),
             interaction=interaction,
         )
         await send_log(
@@ -883,6 +894,24 @@ class OrderTicketView(discord.ui.View):
             ephemeral=True,
         )
         await _close_ticket(interaction, store, order)
+
+
+async def _refresh_order_card(guild, order: dict) -> None:
+    """Re-render the order card in its ticket channel (status, items, buttons) to
+    match the current order — used when the website changes paid status, so the
+    Discord card stays in sync. Best-effort."""
+    cid = order.get("channel_id")
+    mid = order.get("message_id")
+    if not cid or not mid:
+        return
+    ch = guild.get_channel(cid)
+    if ch is None:
+        return
+    try:
+        msg = await ch.fetch_message(mid)
+        await _edit_card(msg, _order_cards(order, guild), lambda: OrderTicketView(order))
+    except discord.HTTPException:
+        pass
 
 
 TICKET_PANEL_VIEW = TicketPanelView()
