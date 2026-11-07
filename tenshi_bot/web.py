@@ -1506,6 +1506,11 @@ async def _h_ticket_type_create(request):
         types.append({"name": name, "category_id": None, "emoji": emoji})
     save_data(DATA)
     try:
+        from .tickets import _refresh_ticket_panel
+        await _refresh_ticket_panel(guild, store)
+    except discord.HTTPException:
+        pass
+    try:
         await send_log(
             guild, store, f"🌐 Order type **{name}** saved via the website.",
             category="web", actor=_web_actor(request, guild),
@@ -1533,6 +1538,11 @@ async def _h_ticket_type_remove(request):
     if len(store["ticket_types"]) == before:
         return _aioweb.json_response({"error": "No order type by that name."}, status=404)
     save_data(DATA)
+    try:
+        from .tickets import _refresh_ticket_panel
+        await _refresh_ticket_panel(guild, store)
+    except discord.HTTPException:
+        pass
     try:
         await send_log(
             guild, store, f"🌐 Order type **{name}** removed via the website.",

@@ -833,6 +833,66 @@ class OrderTicketView(discord.ui.View):
 TICKET_PANEL_VIEW = TicketPanelView()
 ORDER_TICKET_VIEW = OrderTicketView()
 
+
+def _build_ticket_panel(guild, store, message: str | None = None):
+    """Build the ticket-panel embed + dropdown options from the current ticket
+    types. Shared by `/ticket panel` and the auto-refresh."""
+    options: list[discord.SelectOption] = []
+    menu_lines: list[str] = []
+    for t in store.get("ticket_types", []):
+        em = t.get("emoji") or "🎫"
+        options.append(
+            discord.SelectOption(label=t["name"][:100], value=t["name"], emoji=t.get("emoji") or None)
+        )
+        menu_lines.append(f"{em}  **{t['name']}**")
+    embed = discord.Embed(
+        title="🎫  Open a Ticket",
+        description=message
+        or "Need hardware or a job done? Pick an option from the menu below and a "
+        "**private ticket** opens just for you and staff.",
+        color=EMBED_COLOR,
+    )
+    embed.add_field(name="What we handle", value="\n".join(menu_lines) or "—", inline=False)
+    embed.add_field(
+        name="How it works",
+        value=(
+            "1️⃣  Pick a category below\n"
+            "2️⃣  Tell us what you want & how many\n"
+            "3️⃣  A private channel opens — staff take it from there"
+        ),
+        inline=False,
+    )
+    if getattr(guild, "icon", None):
+        embed.set_thumbnail(url=guild.icon.url)
+    _brand(embed, guild, "Tickets are private · one click to open")
+    return embed, options
+
+
+async def _refresh_ticket_panel(guild, store) -> bool:
+    """Re-edit the posted ticket panel in place so its dropdown matches the
+    current types. No-op (returns False) if no panel has been posted or it was
+    deleted. Best-effort — never raises."""
+    cid = store.get("ticket_panel_channel_id")
+    mid = store.get("ticket_panel_message_id")
+    if not cid or not mid:
+        return False
+    channel = guild.get_channel(cid)
+    if channel is None:
+        return False
+    try:
+        msg = await channel.fetch_message(mid)
+    except discord.HTTPException:
+        store["ticket_panel_channel_id"] = None
+        store["ticket_panel_message_id"] = None
+        save_data(DATA)
+        return False
+    embed, options = _build_ticket_panel(guild, store, store.get("ticket_panel_message"))
+    try:
+        await _edit_card(msg, [embed], lambda: TicketPanelView(options))
+    except discord.HTTPException:
+        return False
+    return True
+
 ticket_group = app_commands.Group(
     name="ticket", description="Gun order / vendor / crafting ticket system"
 )
@@ -887,10 +947,15 @@ async def ticket_type_add(
             return
         types.append(entry)
     save_data(DATA)
+    refreshed = False
+    try:
+        refreshed = await _refresh_ticket_panel(interaction.guild, store)
+    except discord.HTTPException:
+        pass
     where = f" under {category.mention}" if category else ""
+    tail = "The panel updated automatically. ✅" if refreshed else "Run `/ticket panel` to (re)post the menu. ✅"
     await interaction.response.send_message(
-        f"Ticket type **{name_clean}** saved{where}. Run `/ticket panel` to "
-        "(re)post the menu. ✅",
+        f"Ticket type **{name_clean}** saved{where}. {tail}",
         ephemeral=True,
     )
 
@@ -914,8 +979,14 @@ async def ticket_type_remove(interaction: discord.Interaction, name: str) -> Non
         )
         return
     save_data(DATA)
+    refreshed = False
+    try:
+        refreshed = await _refresh_ticket_panel(interaction.guild, store)
+    except discord.HTTPException:
+        pass
+    tail = "Panel updated automatically. 🗑️" if refreshed else "Repost with `/ticket panel`. 🗑️"
     await interaction.response.send_message(
-        f"Removed ticket type **{name}**. Repost with `/ticket panel`. 🗑️",
+        f"Removed ticket type **{name}**. {tail}",
         ephemeral=True,
     )
     await send_log(
@@ -1013,46 +1084,24 @@ async def ticket_panel(
     if await _deny(interaction, "post the ticket panel"):
         return
     store = guild_store(DATA, interaction.guild_id)
-    options: list[discord.SelectOption] = []
-    menu_lines: list[str] = []
-    for t in store["ticket_types"]:
-        em = t.get("emoji") or "🎫"
-        options.append(
-            discord.SelectOption(
-                label=t["name"][:100],
-                value=t["name"],
-                emoji=t.get("emoji") or None,
-            )
-        )
-        menu_lines.append(f"{em}  **{t['name']}**")
-    if not options:
+    if not store.get("ticket_types"):
         await interaction.response.send_message(
             "Add at least one ticket type first with `/ticket type_add`.",
             ephemeral=True,
         )
         return
-    embed = discord.Embed(
-        title="🎫  Open a Ticket",
-        description=message
-        or "Need hardware or a job done? Pick an option from the menu below and a "
-        "**private ticket** opens just for you and staff.",
-        color=EMBED_COLOR,
+    embed, options = _build_ticket_panel(interaction.guild, store, message)
+    msg = await _send_card(interaction.channel, [embed], lambda: TicketPanelView(options))
+    # remember where the panel lives so type changes can refresh it in place
+    if msg is not None:
+        store["ticket_panel_channel_id"] = interaction.channel.id
+        store["ticket_panel_message_id"] = msg.id
+        store["ticket_panel_message"] = message
+        save_data(DATA)
+    await interaction.response.send_message(
+        "Ticket panel posted. ✅ It updates on its own when you add or remove types.",
+        ephemeral=True,
     )
-    embed.add_field(name="What we handle", value="\n".join(menu_lines), inline=False)
-    embed.add_field(
-        name="How it works",
-        value=(
-            "1️⃣  Pick a category below\n"
-            "2️⃣  Tell us what you want & how many\n"
-            "3️⃣  A private channel opens — staff take it from there"
-        ),
-        inline=False,
-    )
-    if interaction.guild.icon:
-        embed.set_thumbnail(url=interaction.guild.icon.url)
-    _brand(embed, interaction.guild, "Tickets are private · one click to open")
-    await _send_card(interaction.channel, [embed], lambda: TicketPanelView(options))
-    await interaction.response.send_message("Ticket panel posted. ✅", ephemeral=True)
 
 
 @ticket_group.command(
