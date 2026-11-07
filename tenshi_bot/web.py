@@ -135,6 +135,7 @@ def _roster_members(guild: "discord.Guild", store: dict) -> list[dict]:
             {
                 "id": str(m.id),
                 "name": m.display_name,
+                "username": getattr(m, "name", "") or "",
                 "avatar": str(m.display_avatar.url),
                 "rank": _top_rank_name(guild, store, m),
                 "roles": roles,
@@ -772,6 +773,7 @@ def _orders_list(guild: "discord.Guild", store: dict) -> list[dict]:
                 "type": o.get("type") or "Order",
                 "emoji": emoji_by_type.get(o.get("type"), "🎫"),
                 "customer": m.display_name if m is not None else (f"User {uid}" if uid else "—"),
+                "username": (getattr(m, "name", "") or "") if m is not None else "",
                 "avatar": str(m.display_avatar.url) if m is not None else "",
                 "guns": o.get("guns") or "",
                 "quantity": o.get("quantity") or "",
@@ -1415,6 +1417,33 @@ async def _h_order_paid(request):
     return _aioweb.json_response({"ok": True, "paid": paid})
 
 
+async def _h_orders_clear_closed(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    store = guild_store(DATA, guild.id)
+    before = len(store.get("orders", []))
+    store["orders"] = [o for o in store.get("orders", []) if o.get("status") != "closed"]
+    removed = before - len(store["orders"])
+    save_data(DATA)
+    if removed:
+        try:
+            await send_log(
+                guild, store, f"🌐 Cleared **{removed}** closed order(s) from the list via the website.",
+                category="web", actor=_web_actor(request, guild),
+            )
+        except discord.HTTPException:
+            pass
+    return _aioweb.json_response({"ok": True, "removed": removed})
+
+
 async def _h_order_close(request):
     try:
         body = await request.json()
@@ -1723,6 +1752,7 @@ async def start_web_server() -> None:
             _aioweb.post("/api/order_create", _h_order_create),
             _aioweb.post("/api/order_paid", _h_order_paid),
             _aioweb.post("/api/order_close", _h_order_close),
+            _aioweb.post("/api/orders_clear_closed", _h_orders_clear_closed),
             _aioweb.post("/api/ticket_type_create", _h_ticket_type_create),
             _aioweb.post("/api/ticket_type_remove", _h_ticket_type_remove),
             _aioweb.get("/api/strikes", _h_strikes),
@@ -2232,7 +2262,7 @@ function memberRow(m){
   const s=(STATE.strikes||[]).find(x=>x.id===m.id);
   const flag=s?` <span class="sflag${s.over?' over':''}" title="${s.count}/${s.limit} strikes — see the Strikes tab">⚠️ ${s.count}/${s.limit}</span>`:"";
   return `<li class="member" data-id="${h(m.id)}"><div class="av"><img src="${h(m.avatar)}" alt="" loading="lazy"></div>
-    <div class="grow"><div class="mname">${h(m.name)}${flag}</div><div class="chips">${chips||'<span class="chip locked">no gang roles</span>'}${addsel}</div></div>
+    <div class="grow"><div class="mname">${h(m.name)}${m.username?` <span class="muted" style="font-weight:400;font-size:12px">@${h(m.username)}</span>`:""}${flag}</div><div class="chips">${chips||'<span class="chip locked">no gang roles</span>'}${addsel}</div></div>
     <button class="danger" onclick="removeMember('${h(m.id)}','${h(m.name)}')">Remove all</button></li>`;
 }
 function ago(ts){if(!ts)return"";const s=Math.floor(Date.now()/1000)-Number(ts);if(s<0)return"just now";
@@ -2406,20 +2436,40 @@ function renderOrders(){
     <div class="tlist">${typeRows}</div>
     <div class="ofrow"><input id="tt_emoji" placeholder="🎫" maxlength="8" style="max-width:72px;text-align:center"><input id="tt_name" placeholder="New type name — e.g. Tenshi Vendor or P90s Order"><button class="brand-btn" onclick="addTicketType()">Add type</button></div>
     <div class="muted" style="font-size:11.5px">After changes, run <b>/ticket panel</b> in Discord to repost the open menu.</div></div>`;
-  const header=`<div class="obar"><button class="brand-btn" onclick="toggleOrderForm()">＋ New order</button><button class="ghost" onclick="toggleTypes()">⚙ Order types</button></div>`;
+  const closedN=all.filter(o=>o.status!=="open").length;
+  const clearBtn=closedN?`<button class="ghost" onclick="clearClosedOrders(${closedN})">🧹 Clear ${closedN} closed</button>`:"";
+  const header=`<div class="obar"><button class="brand-btn" onclick="toggleOrderForm()">＋ New order</button><button class="ghost" onclick="toggleTypes()">⚙ Order types</button>${clearBtn}</div>`;
   if(!os.length){$("ordersView").innerHTML=header+form+typesPanel+'<div class="empty">No orders yet. Hit <b>＋ New order</b> to open one. 📭</div>';return;}
-  const rows=os.map(o=>{
-    const paid=o.paid?'<span class="obadge paid">🟢 Paid</span>':'<span class="obadge unpaid">🔴 Unpaid</span>';
-    const st=o.status!=="open"?'<span class="obadge closed">🔒 Closed</span>':"";
-    const items=[o.guns?`<b>${h(o.guns)}</b>`:"",o.quantity?`× ${h(o.quantity)}`:""].filter(Boolean).join(" ");
-    return `<div class="ocard${o.status!=="open"?" dim":""}">
-      <div class="ohead"><div class="otitle">${h(o.emoji)} ${h(o.type)} <span class="oid">#${h(String(o.id))}</span></div>
-        <div class="obadges">${paid}${st}${orderPrioPill(o.priority)}</div></div>
-      <div class="ometa"><span>👤 ${h(o.customer)}</span>${items?`<span>🔫 ${items}</span>`:""}${o.created_ts?`<span>🕒 ${ago(o.created_ts)}</span>`:""}</div>
-      ${o.notes?`<div class="reason">${h(o.notes)}</div>`:""}
-      <div class="oactions">${o.status==="open"?`<button class="${o.paid?"ghost":"brand-btn"}" onclick="markOrderPaid('${h(String(o.id))}',${o.paid?"false":"true"})">${o.paid?"Mark unpaid":"Mark paid"}</button><button class="danger" onclick="closeOrder('${h(String(o.id))}')">Force close</button>`:""}</div></div>`;
+  // group by category (ticket type) — an overall list of what the orders are
+  const PR={urgent:0,high:1,normal:2,low:3};
+  const groups={};
+  os.forEach(o=>{(groups[o.type]=groups[o.type]||[]).push(o);});
+  const sections=Object.keys(groups).sort((a,b)=>a.toLowerCase().localeCompare(b.toLowerCase())).map(ty=>{
+    const list=groups[ty].slice().sort((a,b)=>((a.status!=="open")-(b.status!=="open"))||((PR[a.priority]??2)-(PR[b.priority]??2))||((b.created_ts||0)-(a.created_ts||0)));
+    const emoji=list[0].emoji||"🎫";
+    const op=list.filter(o=>o.status==="open").length;
+    const paidG=list.filter(o=>o.status==="open"&&o.paid).length;
+    const head=`<div class="ranklabel">${h(emoji)} ${h(ty)}<span class="pill">${op} open · ${paidG} paid · ${list.length} total</span></div>`;
+    return head+`<div class="olist">${list.map(orderCard).join("")}</div>`;
   }).join("");
-  $("ordersView").innerHTML=header+form+typesPanel+`<div class="olist">${rows}</div>`;
+  $("ordersView").innerHTML=header+form+typesPanel+sections;
+}
+function orderCard(o){
+  const paid=o.paid?'<span class="obadge paid">🟢 Paid</span>':'<span class="obadge unpaid">🔴 Unpaid</span>';
+  const st=o.status!=="open"?'<span class="obadge closed">🔒 Closed</span>':"";
+  const items=[o.guns?`<b>${h(o.guns)}</b>`:"",o.quantity?`× ${h(o.quantity)}`:""].filter(Boolean).join(" ");
+  const who=`👤 ${h(o.customer)}${o.username?` <span class="muted">@${h(o.username)}</span>`:""}`;
+  return `<div class="ocard${o.status!=="open"?" dim":""}">
+    <div class="ohead"><div class="otitle">${h(o.emoji)} ${h(o.type)} <span class="oid">#${h(String(o.id))}</span></div>
+      <div class="obadges">${paid}${st}${orderPrioPill(o.priority)}</div></div>
+    <div class="ometa"><span>${who}</span>${items?`<span>🔫 ${items}</span>`:""}${o.created_ts?`<span>🕒 ${ago(o.created_ts)}</span>`:""}</div>
+    ${o.notes?`<div class="reason">${h(o.notes)}</div>`:""}
+    <div class="oactions">${o.status==="open"?`<button class="${o.paid?"ghost":"brand-btn"}" onclick="markOrderPaid('${h(String(o.id))}',${o.paid?"false":"true"})">${o.paid?"Mark unpaid":"Mark paid"}</button><button class="danger" onclick="closeOrder('${h(String(o.id))}')">Force close</button>`:""}</div></div>`;
+}
+async function clearClosedOrders(n){
+  if(!confirm("Remove all "+n+" closed order(s) from the list? (The Discord channels are already gone; this just clears the history here.)"))return;
+  try{const r=await post("/api/orders_clear_closed",{guild:STATE.guild});toast("Cleared "+(r.removed||0)+" closed order(s)","ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 function toggleOrderForm(on){const f=$("oform");if(!f)return;const open=on===undefined?f.style.display==="none":on;f.style.display=open?"":"none";}
 async function createOrder(){

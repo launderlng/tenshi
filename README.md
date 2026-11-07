@@ -111,10 +111,10 @@ A browser page, served by the bot itself, that mirrors a lot of the bot. It's
 **off** unless you set it up, and the bot runs exactly the same without it.
 
 - **Overview strip** — live counts (ranked, KOS, open EOIs, strikes 30d, wars, radio).
-- **Roster tab** — everyone grouped by rank. Per member you can **remove an
-  individual role** (the ✕ on each role chip), **add a rank** (the `+ role`
-  dropdown), or **Remove all** (strip every gang role at once). Roles above the
-  bot show a 🔒 and can't be touched.
+- **Roster tab** — everyone grouped by rank, each with their Discord **@handle**.
+  Per member you can **remove an individual role** (the ✕ on each role chip),
+  **add a rank** (the `+ role` dropdown), or **Remove all** (strip every gang
+  role at once). Roles above the bot show a 🔒 and can't be touched.
 - **KOS tab** — the KOS list with each entry's reason, who added it and when,
   and **Take off KOS** (removes the KOS role + list entry).
 - **Strikes tab** — everyone who currently has strikes, worst first: a count
@@ -127,14 +127,15 @@ A browser page, served by the bot itself, that mirrors a lot of the bot. It's
 - **Wars tab** — active/past wars with live scores, win-rate bar, a recent
   rounds strip (🟩🟥), when each war started, the first-to target and progress,
   and the last round logged. Read-only.
-- **Orders tab** — every ticket/order: customer, items/guns + quantity, paid or
-  unpaid, priority and when it was opened. **＋ New order** opens a real Discord
-  ticket (pick a type + optional customer, items, quantity, notes) exactly like
-  the in-Discord panel; **Mark paid / unpaid** toggles payment and **Force
-  close** closes the ticket (transcript saved, channel deleted) even if the
-  channel is gone. **⚙ Order types** lets you create and name the types people
-  can open (e.g. "Tenshi Vendor", "P90s Order") and remove them — repost the
-  menu in Discord with `/ticket panel` after changes.
+- **Orders tab** — orders **grouped by category** (ticket type), each group
+  showing open/paid/total counts. Per order: customer (with their Discord
+  **@handle**), items/guns + quantity, paid/unpaid, priority and age. **＋ New
+  order** opens a real Discord ticket (type + optional customer, items,
+  quantity, notes); **Mark paid / unpaid** toggles payment; **Force close**
+  closes the ticket (transcript saved, channel deleted) even if the channel is
+  gone; **🧹 Clear closed** removes old closed orders from the list. **⚙ Order
+  types** creates and names the types people can open (e.g. "Tenshi Vendor",
+  "P90s Order") — the posted ticket panel **auto-updates** when types change.
 
 Every change applies to Discord live.
 
