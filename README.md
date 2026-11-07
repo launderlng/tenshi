@@ -130,7 +130,11 @@ A browser page, served by the bot itself, that mirrors a lot of the bot. It's
 - **Orders tab** — every ticket/order: customer, items/guns + quantity, paid or
   unpaid, priority and when it was opened. **＋ New order** opens a real Discord
   ticket (pick a type + optional customer, items, quantity, notes) exactly like
-  the in-Discord panel, and you can toggle **Mark paid / unpaid** per order.
+  the in-Discord panel; **Mark paid / unpaid** toggles payment and **Force
+  close** closes the ticket (transcript saved, channel deleted) even if the
+  channel is gone. **⚙ Order types** lets you create and name the types people
+  can open (e.g. "Tenshi Vendor", "P90s Order") and remove them — repost the
+  menu in Discord with `/ticket panel` after changes.
 
 Every change applies to Discord live.
 

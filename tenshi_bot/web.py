@@ -1415,6 +1415,134 @@ async def _h_order_paid(request):
     return _aioweb.json_response({"ok": True, "paid": paid})
 
 
+async def _h_order_close(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    try:
+        oid = int(body.get("order_id"))
+    except (TypeError, ValueError):
+        return _aioweb.json_response({"error": "Bad order_id."}, status=400)
+    store = guild_store(DATA, guild.id)
+    order = next((o for o in store.get("orders", []) if o.get("id") == oid), None)
+    if order is None:
+        return _aioweb.json_response({"error": "Order not found."}, status=404)
+    if order.get("status") == "closed":
+        return _aioweb.json_response({"ok": True, "already": True})
+
+    closer = _web_actor(request, guild)
+    reason = (body.get("reason") or "Force-closed from the website").strip()
+    channel = None
+    if order.get("channel_id"):
+        try:
+            channel = guild.get_channel(int(order["channel_id"]))
+        except (TypeError, ValueError):
+            channel = None
+
+    # Always mark it closed now — that's the "force" guarantee, even if the
+    # channel is gone or deleting it fails.
+    order["status"] = "closed"
+    order["closed_ts"] = int(datetime.datetime.now(datetime.timezone.utc).timestamp())
+    order["closed_by"] = getattr(closer, "id", None)
+    save_data(DATA)
+
+    if channel is not None:
+        # Transcript + DM + channel delete runs in the background so the request
+        # returns straight away (it ends with a 5s wait before deleting).
+        from .tickets import _close_ticket_core
+        import asyncio
+        asyncio.create_task(_close_ticket_core(guild, channel, closer, store, order, reason))
+    else:
+        try:
+            await send_log(
+                guild, store,
+                f"🔒 **{order.get('type', 'order')}** #{oid} force-closed (no channel on record).",
+                category="tickets", actor=closer,
+            )
+        except discord.HTTPException:
+            pass
+    try:
+        await send_log(
+            guild, store,
+            f"🌐 Order `#{oid}` force-closed via the website.",
+            category="web", actor=closer,
+        )
+    except discord.HTTPException:
+        pass
+    return _aioweb.json_response({"ok": True})
+
+
+async def _h_ticket_type_create(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    name = (body.get("name") or "").strip()[:60]
+    if not name:
+        return _aioweb.json_response({"error": "Give the order type a name."}, status=400)
+    emoji = (body.get("emoji") or "").strip()[:8] or None
+    store = guild_store(DATA, guild.id)
+    types = store.setdefault("ticket_types", [])
+    for t in types:
+        if t["name"].lower() == name.lower():
+            t["emoji"] = emoji
+            break
+    else:
+        if len(types) >= 25:
+            return _aioweb.json_response({"error": "You can have at most 25 order types."}, status=400)
+        types.append({"name": name, "category_id": None, "emoji": emoji})
+    save_data(DATA)
+    try:
+        await send_log(
+            guild, store, f"🌐 Order type **{name}** saved via the website.",
+            category="web", actor=_web_actor(request, guild),
+        )
+    except discord.HTTPException:
+        pass
+    return _aioweb.json_response({"ok": True, "types": _ticket_types(store)})
+
+
+async def _h_ticket_type_remove(request):
+    try:
+        body = await request.json()
+    except Exception:
+        return _aioweb.json_response({"error": "Bad JSON body."}, status=400)
+    guild = _guild_from(str(body.get("guild") or ""))
+    if guild is None:
+        return _aioweb.json_response({"error": "Guild not found."}, status=404)
+    ok, code, msg = await _gate(request, guild)
+    if not ok:
+        return _aioweb.json_response({"error": msg}, status=code)
+    name = (body.get("name") or "").strip()
+    store = guild_store(DATA, guild.id)
+    before = len(store.get("ticket_types", []))
+    store["ticket_types"] = [t for t in store.get("ticket_types", []) if t["name"].lower() != name.lower()]
+    if len(store["ticket_types"]) == before:
+        return _aioweb.json_response({"error": "No order type by that name."}, status=404)
+    save_data(DATA)
+    try:
+        await send_log(
+            guild, store, f"🌐 Order type **{name}** removed via the website.",
+            category="web", actor=_web_actor(request, guild),
+        )
+    except discord.HTTPException:
+        pass
+    return _aioweb.json_response({"ok": True, "types": _ticket_types(store)})
+
+
 async def _h_strikes(request):
     guild = _guild_from(request.query.get("guild"))
     if guild is None:
@@ -1584,6 +1712,9 @@ async def start_web_server() -> None:
             _aioweb.get("/api/orders", _h_orders),
             _aioweb.post("/api/order_create", _h_order_create),
             _aioweb.post("/api/order_paid", _h_order_paid),
+            _aioweb.post("/api/order_close", _h_order_close),
+            _aioweb.post("/api/ticket_type_create", _h_ticket_type_create),
+            _aioweb.post("/api/ticket_type_remove", _h_ticket_type_remove),
             _aioweb.get("/api/strikes", _h_strikes),
             _aioweb.post("/api/strike_remove", _h_strike_remove),
             _aioweb.post("/api/strike_clear", _h_strike_clear),
@@ -1920,6 +2051,11 @@ _PAGE_HTML = """
   .oform textarea{resize:vertical}
   .oform select:focus,.oform input:focus,.oform textarea:focus{outline:none;border-color:rgba(244,63,94,.5);
     box-shadow:0 0 0 3px rgba(225,29,72,.14)}
+  .tlist{display:flex;flex-direction:column;gap:6px}
+  .trow{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 12px;border-radius:10px;
+    background:rgba(0,0,0,.25);border:1px solid var(--line);font-size:14px}
+  .trow .srm{cursor:pointer;color:var(--mute);font-weight:800;opacity:.6;transition:.15s}
+  .trow .srm:hover{opacity:1;color:#fca5a5}
 </style>
 </head>
 <body>
@@ -2254,8 +2390,14 @@ function renderOrders(){
     <div class="ofrow"><input id="of_guns" placeholder="Items / guns (e.g. 2x AK, 1x pistol)"><input id="of_qty" placeholder="Quantity (e.g. 3)"></div>
     <textarea id="of_notes" rows="2" placeholder="Notes — delivery spot, timing, budget…"></textarea>
     <div class="ofrow" style="justify-content:flex-end;gap:8px"><button class="ghost" onclick="toggleOrderForm(false)">Cancel</button><button class="brand-btn" onclick="createOrder()" ${types.length?"":"disabled"}>Create order &amp; open ticket</button></div></div>`;
-  const header=`<div class="obar"><button class="brand-btn" onclick="toggleOrderForm()">＋ New order</button></div>`;
-  if(!os.length){$("ordersView").innerHTML=header+form+'<div class="empty">No orders yet. Hit <b>＋ New order</b> to open one. 📭</div>';return;}
+  const typeRows=(STATE.ticketTypes||[]).map(t=>`<div class="trow"><span>${h(t.emoji||"🎫")} ${h(t.name)}</span><span class="srm" title="Remove this order type" onclick="removeTicketType('${h(t.name)}')">✕</span></div>`).join("")||'<div class="muted" style="font-size:13px">No order types yet — add one below.</div>';
+  const typesPanel=`<div class="ocard oform" id="otypes" style="display:none">
+    <div style="font-weight:700">Order types <span class="muted" style="font-weight:400;font-size:12px">— what people can open from the panel</span></div>
+    <div class="tlist">${typeRows}</div>
+    <div class="ofrow"><input id="tt_emoji" placeholder="🎫" maxlength="8" style="max-width:72px;text-align:center"><input id="tt_name" placeholder="New type name — e.g. Tenshi Vendor or P90s Order"><button class="brand-btn" onclick="addTicketType()">Add type</button></div>
+    <div class="muted" style="font-size:11.5px">After changes, run <b>/ticket panel</b> in Discord to repost the open menu.</div></div>`;
+  const header=`<div class="obar"><button class="brand-btn" onclick="toggleOrderForm()">＋ New order</button><button class="ghost" onclick="toggleTypes()">⚙ Order types</button></div>`;
+  if(!os.length){$("ordersView").innerHTML=header+form+typesPanel+'<div class="empty">No orders yet. Hit <b>＋ New order</b> to open one. 📭</div>';return;}
   const rows=os.map(o=>{
     const paid=o.paid?'<span class="obadge paid">🟢 Paid</span>':'<span class="obadge unpaid">🔴 Unpaid</span>';
     const st=o.status!=="open"?'<span class="obadge closed">🔒 Closed</span>':"";
@@ -2265,9 +2407,9 @@ function renderOrders(){
         <div class="obadges">${paid}${st}${orderPrioPill(o.priority)}</div></div>
       <div class="ometa"><span>👤 ${h(o.customer)}</span>${items?`<span>🔫 ${items}</span>`:""}${o.created_ts?`<span>🕒 ${ago(o.created_ts)}</span>`:""}</div>
       ${o.notes?`<div class="reason">${h(o.notes)}</div>`:""}
-      <div class="oactions">${o.status==="open"?`<button class="${o.paid?"ghost":"brand-btn"}" onclick="markOrderPaid('${h(String(o.id))}',${o.paid?"false":"true"})">${o.paid?"Mark unpaid":"Mark paid"}</button>`:""}</div></div>`;
+      <div class="oactions">${o.status==="open"?`<button class="${o.paid?"ghost":"brand-btn"}" onclick="markOrderPaid('${h(String(o.id))}',${o.paid?"false":"true"})">${o.paid?"Mark unpaid":"Mark paid"}</button><button class="danger" onclick="closeOrder('${h(String(o.id))}')">Force close</button>`:""}</div></div>`;
   }).join("");
-  $("ordersView").innerHTML=header+form+`<div class="olist">${rows}</div>`;
+  $("ordersView").innerHTML=header+form+typesPanel+`<div class="olist">${rows}</div>`;
 }
 function toggleOrderForm(on){const f=$("oform");if(!f)return;const open=on===undefined?f.style.display==="none":on;f.style.display=open?"":"none";}
 async function createOrder(){
@@ -2278,6 +2420,24 @@ async function createOrder(){
 }
 async function markOrderPaid(id,paid){
   try{await post("/api/order_paid",{guild:STATE.guild,order_id:id,paid});toast("Order #"+id+(paid?" marked paid":" marked unpaid"),"ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
+}
+async function closeOrder(id){
+  if(!confirm("Force-close order #"+id+"? The ticket channel will be closed and a transcript saved."))return;
+  try{await post("/api/order_close",{guild:STATE.guild,order_id:id});toast("Order #"+id+" closed","ok");await reload();}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
+}
+function toggleTypes(){const f=$("otypes");if(f)f.style.display=f.style.display==="none"?"":"none";}
+async function addTicketType(){
+  const name=(($("tt_name")||{}).value||"").trim();if(!name)return toast("Type a name","err");
+  try{const r=await post("/api/ticket_type_create",{guild:STATE.guild,name,emoji:($("tt_emoji")||{}).value||""});
+    STATE.ticketTypes=r.types||[];toast("Saved order type","ok");render();const f=$("otypes");if(f)f.style.display="";}
+  catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
+}
+async function removeTicketType(name){
+  if(!confirm('Remove order type "'+name+'"?'))return;
+  try{const r=await post("/api/ticket_type_remove",{guild:STATE.guild,name});
+    STATE.ticketTypes=r.types||[];toast("Removed order type","ok");render();const f=$("otypes");if(f)f.style.display="";}
   catch(e){if(e.status===401||e.status===403)return boot();toast(e.message||"Failed","err");}
 }
 boot();
