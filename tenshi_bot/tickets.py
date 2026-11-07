@@ -647,12 +647,14 @@ class TicketPanelSelect(discord.ui.Select):
                 "🔒 Ticket orders are currently **closed**. Check back later.",
                 ephemeral=True,
             )
+            await _reset_panel_select(interaction, store)
             return
         chosen = self.values[0]
         if _find_ticket_type(store, chosen) is None:
             await interaction.response.send_message(
                 "That ticket type no longer exists.", ephemeral=True
             )
+            await _reset_panel_select(interaction, store)
             return
         # one open ticket per member per type — send them to the existing one
         for o in store["orders"]:
@@ -667,14 +669,31 @@ class TicketPanelSelect(discord.ui.Select):
                         f"You already have an open **{chosen}** ticket: {ch.mention}",
                         ephemeral=True,
                     )
+                    await _reset_panel_select(interaction, store)
                     return
         await interaction.response.send_modal(OrderModal(chosen))
+        # Reset the dropdown so the same option can be picked again — otherwise a
+        # single-option menu stays "selected" and Discord won't fire a new pick.
+        await _reset_panel_select(interaction, store)
 
 
 class TicketPanelView(discord.ui.View):
     def __init__(self, options: list[discord.SelectOption] | None = None) -> None:
         super().__init__(timeout=None)
         self.add_item(TicketPanelSelect(options))
+
+
+async def _reset_panel_select(interaction: discord.Interaction, store: dict) -> None:
+    """Re-attach a fresh panel dropdown to the message so its selection clears
+    and the same option can be opened again. Best-effort."""
+    msg = getattr(interaction, "message", None)
+    if msg is None:
+        return
+    try:
+        embed, options = _build_ticket_panel(interaction.guild, store, store.get("ticket_panel_message"))
+        await _edit_card(msg, [embed], lambda: TicketPanelView(options))
+    except (discord.HTTPException, AttributeError):
+        pass
 
 
 class OrderTicketView(discord.ui.View):
